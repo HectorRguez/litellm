@@ -97,7 +97,7 @@ def _decode_to_float32(file_bytes: bytes) -> Tuple["FloatArray", int]:
 
     sf_error: Exception | None = None
     try:
-        import soundfile as sf  # type: ignore
+        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]  # optional audio decoder lacks stubs
 
         with io.BytesIO(file_bytes) as buf:
             data, source_rate = sf.read(buf, dtype="float32", always_2d=False)

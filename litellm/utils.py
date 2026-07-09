@@ -8150,6 +8150,12 @@ class ProviderConfigManager:
             )
 
             return VertexAIAudioTranscriptionConfig()
+        elif litellm.LlmProviders.OPENROUTER == provider:
+            from litellm.llms.openrouter.audio_transcription.transformation import (
+                OpenRouterAudioTranscriptionConfig,
+            )
+
+            return OpenRouterAudioTranscriptionConfig()
         return None
 
     @staticmethod

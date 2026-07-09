@@ -259,7 +259,7 @@ def calculate_request_duration(file: FileTypes) -> Optional[float]:
         Duration in seconds, or None if extraction fails or soundfile is not available
     """
     try:
-        import soundfile as sf
+        import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]  # optional duration helper lacks stubs
     except ImportError:
         # soundfile not available, cannot extract duration
         return None
