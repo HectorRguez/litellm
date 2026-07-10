@@ -1891,6 +1891,7 @@
         "moderations": false,
         "batches": false,
         "rerank": false,
+        "video_generations": true,
         "a2a": true,
         "interactions": true
       }

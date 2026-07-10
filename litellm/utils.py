@@ -8676,6 +8676,10 @@ class ProviderConfigManager:
             from litellm.llms.runwayml.videos.transformation import RunwayMLVideoConfig
 
             return RunwayMLVideoConfig()
+        elif LlmProviders.OPENROUTER == provider:
+            from litellm.llms.openrouter.videos.transformation import OpenRouterVideoConfig
+
+            return OpenRouterVideoConfig()
         return None
 
     @staticmethod
