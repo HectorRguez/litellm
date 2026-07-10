@@ -1,16 +1,25 @@
+import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
 import litellm
-import litellm.main as litellm_main
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.llms.openrouter.common_utils import OpenRouterException
 from litellm.llms.openrouter.text_to_speech.transformation import (
     OpenRouterTextToSpeechConfig,
 )
 from litellm.types.llms.openai import HttpxBinaryResponseContent
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_openrouter_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OR_SITE_URL", "https://tests.litellm.ai")
+    monkeypatch.setenv("OR_APP_NAME", "LiteLLM Tests")
 
 
 def _clear_openrouter_keys(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -30,33 +39,168 @@ def test_provider_config_manager_registers_openrouter_text_to_speech_config() ->
     )
 
 
-def test_litellm_speech_routes_openrouter_to_shared_tts_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    sentinel = object()
-    captured_kwargs = {}
+def test_provider_endpoint_metadata_marks_openrouter_speech_supported() -> None:
+    repository_root = Path(__file__).parents[5]
+    endpoint_metadata = json.loads((repository_root / "provider_endpoints_support.json").read_text())
 
-    def fake_text_to_speech_handler(**kwargs):
-        captured_kwargs.update(kwargs)
-        return sentinel
+    assert endpoint_metadata["providers"]["openrouter"]["endpoints"]["audio_speech"] is True
 
-    monkeypatch.setattr(
-        litellm_main.base_llm_http_handler,
-        "text_to_speech_handler",
-        fake_text_to_speech_handler,
-    )
 
-    response = litellm.speech(
-        model="openrouter/hexgrad/kokoro-82m",
-        input="hello",
-        voice="af_alloy",
-        api_key="test-key",
-    )
+def test_litellm_speech_uses_shared_handler_with_openai_compatible_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_requests: list[httpx.Request] = []
 
-    assert response is sentinel
-    assert captured_kwargs["custom_llm_provider"] == "openrouter"
-    assert captured_kwargs["model"] == "hexgrad/kokoro-82m"
-    assert captured_kwargs["voice"] == "af_alloy"
-    assert captured_kwargs["litellm_params"]["api_key"] == "test-key"
-    assert isinstance(captured_kwargs["text_to_speech_provider_config"], OpenRouterTextToSpeechConfig)
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        return httpx.Response(200, content=b"sync-audio")
+
+    transport_client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = HTTPHandler(client=transport_client)
+    global_headers = {"X-Global": "global", "X-Precedence": "global"}
+    public_headers = {"X-Public": "public", "X-Precedence": "public"}
+    extra_headers = {"X-Extra": "extra", "X-Precedence": "extra"}
+    original_global_headers = global_headers.copy()
+    original_public_headers = public_headers.copy()
+    original_extra_headers = extra_headers.copy()
+    monkeypatch.setattr(litellm, "headers", global_headers)
+
+    try:
+        response = litellm.speech(
+            model="openrouter/hexgrad/kokoro-82m",
+            input="hello",
+            voice="af_alloy",
+            api_key="test-key",
+            api_base="https://openrouter.test/api/v1/",
+            headers=public_headers,
+            extra_headers=extra_headers,
+            extra_body={"provider": {"order": ["preferred-provider"]}},
+            instructions="Do not forward this",
+            client=client,
+        )
+    finally:
+        client.close()
+
+    assert isinstance(response, HttpxBinaryResponseContent)
+    assert response.response.content == b"sync-audio"
+    assert len(captured_requests) == 1
+    request = captured_requests[0]
+    assert str(request.url) == "https://openrouter.test/api/v1/audio/speech"
+    assert json.loads(request.content) == {
+        "model": "hexgrad/kokoro-82m",
+        "input": "hello",
+        "voice": "af_alloy",
+        "response_format": "mp3",
+        "provider": {"order": ["preferred-provider"]},
+    }
+    assert request.headers["authorization"] == "Bearer test-key"
+    assert request.headers["http-referer"] == "https://tests.litellm.ai"
+    assert request.headers["x-title"] == "LiteLLM Tests"
+    assert request.headers["x-global"] == "global"
+    assert request.headers["x-public"] == "public"
+    assert request.headers["x-extra"] == "extra"
+    assert request.headers["x-precedence"] == "extra"
+    assert global_headers == original_global_headers
+    assert public_headers == original_public_headers
+    assert extra_headers == original_extra_headers
+
+
+def test_litellm_speech_merges_all_header_sources_without_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        return httpx.Response(200, content=b"audio")
+
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond)))
+    global_headers = {"X-Global": "global", "X-Precedence": "global"}
+    public_headers = {"X-Public": "public", "X-Precedence": "public"}
+    extra_headers = {"X-Extra": "extra", "X-Precedence": "extra"}
+    original_headers = (global_headers.copy(), public_headers.copy(), extra_headers.copy())
+    monkeypatch.setattr(litellm, "headers", global_headers)
+
+    try:
+        litellm.speech(
+            model="openrouter/hexgrad/kokoro-82m",
+            input="hello",
+            voice="af_alloy",
+            api_key="test-key",
+            headers=public_headers,
+            extra_headers=extra_headers,
+            client=client,
+        )
+    finally:
+        client.close()
+
+    request_headers = captured_requests[0].headers
+    assert request_headers["x-global"] == "global"
+    assert request_headers["x-public"] == "public"
+    assert request_headers["x-extra"] == "extra"
+    assert request_headers["x-precedence"] == "extra"
+    assert (global_headers, public_headers, extra_headers) == original_headers
+
+
+@pytest.mark.asyncio
+async def test_litellm_aspeech_uses_injected_async_transport() -> None:
+    captured_requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        return httpx.Response(200, content=b"async-audio")
+
+    client = AsyncHTTPHandler()
+    await client.close()
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+
+    try:
+        response = await litellm.aspeech(
+            model="openrouter/hexgrad/kokoro-82m",
+            input="hello async",
+            voice="af_heart",
+            response_format="wav",
+            speed=2,
+            api_key="test-key",
+            api_base="https://openrouter.test/api/v1",
+            client=client,
+        )
+    finally:
+        await client.close()
+
+    assert isinstance(response, HttpxBinaryResponseContent)
+    assert response.response.content == b"async-audio"
+    assert len(captured_requests) == 1
+    request = captured_requests[0]
+    assert str(request.url) == "https://openrouter.test/api/v1/audio/speech"
+    assert json.loads(request.content) == {
+        "model": "hexgrad/kokoro-82m",
+        "input": "hello async",
+        "voice": "af_heart",
+        "response_format": "wav",
+        "speed": 2,
+    }
+
+
+def test_litellm_speech_maps_openrouter_non_success_response() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"message": "capacity exhausted"}})
+
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond)))
+
+    try:
+        with pytest.raises(OpenRouterException) as exc_info:
+            litellm.speech(
+                model="openrouter/hexgrad/kokoro-82m",
+                input="hello",
+                voice="af_alloy",
+                api_key="test-key",
+                api_base="https://openrouter.test/api/v1",
+                client=client,
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.status_code == 429
+    assert "capacity exhausted" in exc_info.value.message
 
 
 def test_litellm_speech_requires_openrouter_voice() -> None:
@@ -73,18 +217,30 @@ class TestOpenRouterTextToSpeechConfig:
         self.config = OpenRouterTextToSpeechConfig()
         self.logging_obj = Mock()
 
+    def test_supported_openai_params_match_openrouter_schema(self) -> None:
+        assert self.config.get_supported_openai_params("hexgrad/kokoro-82m") == [
+            "voice",
+            "response_format",
+            "speed",
+        ]
+
     def test_validate_environment_sets_openrouter_headers(self) -> None:
+        caller_headers = {"X-Custom": "value"}
+
         headers = self.config.validate_environment(
-            headers={"X-Custom": "value"},
+            headers=caller_headers,
             model="hexgrad/kokoro-82m",
             api_key="test-key",
         )
 
-        assert headers["Authorization"] == "Bearer test-key"
-        assert headers["HTTP-Referer"] == "https://litellm.ai"
-        assert headers["X-Title"] == "liteLLM"
-        assert headers["Content-Type"] == "application/json"
-        assert headers["X-Custom"] == "value"
+        assert headers == {
+            "Authorization": "Bearer test-key",
+            "HTTP-Referer": "https://tests.litellm.ai",
+            "X-Title": "LiteLLM Tests",
+            "Content-Type": "application/json",
+            "X-Custom": "value",
+        }
+        assert caller_headers == {"X-Custom": "value"}
 
     def test_validate_environment_raises_without_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _clear_openrouter_keys(monkeypatch)
@@ -106,38 +262,38 @@ class TestOpenRouterTextToSpeechConfig:
             == "https://openrouter.ai/api/v1/audio/speech"
         )
 
-    def test_map_openai_params_normalizes_voice_dict_and_extra_body(self) -> None:
+    def test_map_openai_params_filters_instructions_and_preserves_extra_body(self) -> None:
         voice, params = self.config.map_openai_params(
             model="hexgrad/kokoro-82m",
-            optional_params={"response_format": "mp3"},
+            optional_params={"speed": 1, "instructions": "Do not forward this"},
             voice={"voice_id": "af_alloy"},
-            kwargs={"extra_body": {"sample_rate": 24000}},
+            kwargs={"extra_body": {"provider": {"order": ["preferred-provider"]}}},
         )
 
         assert voice == "af_alloy"
-        assert params == {"response_format": "mp3", "sample_rate": 24000}
+        assert params == {
+            "speed": 1,
+            "response_format": "mp3",
+            "provider": {"order": ["preferred-provider"]},
+        }
 
-    def test_transform_text_to_speech_request_preserves_openai_fields(self) -> None:
+    def test_transform_text_to_speech_request_preserves_supported_fields(self) -> None:
         request_data = self.config.transform_text_to_speech_request(
             model="hexgrad/kokoro-82m",
             input="Narrate this scene",
             voice="af_alloy",
-            optional_params={
-                "response_format": "mp3",
-                "speed": 1,
-                "instructions": "Warm narration",
-            },
+            optional_params={"response_format": "mp3", "speed": 1},
             litellm_params={},
             headers={},
         )
 
-        body = request_data["dict_body"]
-        assert body["model"] == "hexgrad/kokoro-82m"
-        assert body["input"] == "Narrate this scene"
-        assert body["voice"] == "af_alloy"
-        assert body["response_format"] == "mp3"
-        assert body["speed"] == 1
-        assert body["instructions"] == "Warm narration"
+        assert request_data["dict_body"] == {
+            "model": "hexgrad/kokoro-82m",
+            "input": "Narrate this scene",
+            "voice": "af_alloy",
+            "response_format": "mp3",
+            "speed": 1,
+        }
 
     def test_transform_text_to_speech_response_returns_binary_content(self) -> None:
         raw_response = httpx.Response(
