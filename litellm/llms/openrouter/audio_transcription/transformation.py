@@ -25,6 +25,7 @@ from litellm.types.llms.openai import (
 from litellm.types.utils import (
     FileTypes,
     TranscriptionResponse,
+    TranscriptionUsageDurationObject,
     TranscriptionUsageInputTokenDetailsObject,
     TranscriptionUsageTokensObject,
 )
@@ -68,10 +69,10 @@ _JSON_OBJECT_ADAPTER: TypeAdapter[Mapping[str, JsonValue]] = TypeAdapter(Mapping
 class _OpenRouterTranscriptionUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    seconds: float
-    input_tokens: int
-    output_tokens: int
-    total_tokens: int
+    seconds: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
     cost: float
 
 
@@ -195,24 +196,43 @@ class OpenRouterAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
                 headers=raw_response.headers,
             ) from None
 
-        normalized_usage = TranscriptionUsageTokensObject(
-            type="tokens",
-            input_tokens=provider_response.usage.input_tokens,
-            output_tokens=provider_response.usage.output_tokens,
-            total_tokens=provider_response.usage.total_tokens,
-            input_token_details=TranscriptionUsageInputTokenDetailsObject(
-                audio_tokens=provider_response.usage.input_tokens,
-                text_tokens=0,
-            ),
-        )
+        match provider_response.usage:
+            case _OpenRouterTranscriptionUsage(
+                input_tokens=int() as input_tokens,
+                output_tokens=int() as output_tokens,
+                total_tokens=int() as total_tokens,
+            ):
+                normalized_usage = TranscriptionUsageTokensObject(
+                    type="tokens",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    input_token_details=TranscriptionUsageInputTokenDetailsObject(
+                        audio_tokens=input_tokens,
+                        text_tokens=0,
+                    ),
+                )
+            case _OpenRouterTranscriptionUsage(seconds=float() as seconds):
+                normalized_usage = TranscriptionUsageDurationObject(type="duration", seconds=seconds)
+            case _:
+                raise OpenRouterException(
+                    message=raw_response.text,
+                    status_code=raw_response.status_code,
+                    headers=raw_response.headers,
+                )
         response = TranscriptionResponse(text=provider_response.text)
         response.usage = normalized_usage
         for key, value in provider_fields.items():
             if key not in ("text", "usage"):
                 response[key] = value
+        duration_hidden_params = (
+            {}
+            if provider_response.usage.seconds is None
+            else {"audio_transcription_duration": provider_response.usage.seconds}
+        )
         hidden_params = {  # mutable-ok: TranscriptionResponse requires mutable hidden params
             **provider_fields,
-            "audio_transcription_duration": provider_response.usage.seconds,
+            **duration_hidden_params,
             "additional_headers": {  # mutable-ok: cost tracking requires mutable response headers
                 _RESPONSE_COST_HEADER: provider_response.usage.cost
             },

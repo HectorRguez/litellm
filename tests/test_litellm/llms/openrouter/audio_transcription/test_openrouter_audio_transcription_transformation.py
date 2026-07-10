@@ -18,7 +18,11 @@ from litellm.llms.openrouter.audio_transcription.transformation import (
     OpenRouterAudioTranscriptionConfig,
 )
 from litellm.llms.openrouter.common_utils import OpenRouterException
-from litellm.types.utils import LlmProviders, TranscriptionUsageTokensObject
+from litellm.types.utils import (
+    LlmProviders,
+    TranscriptionUsageDurationObject,
+    TranscriptionUsageTokensObject,
+)
 from litellm.utils import ProviderConfigManager
 
 
@@ -277,6 +281,40 @@ class TestOpenRouterAudioTranscriptionConfig:
         assert response["words"][1]["word"] == "transcription"
         assert response._hidden_params["text"] == response.text
         _assert_normalized_usage(response)
+
+    @pytest.mark.parametrize(
+        ("provider_usage", "expected_usage_type"),
+        [
+            ({"seconds": 18, "cost": 0.0048}, TranscriptionUsageDurationObject),
+            (
+                {"total_tokens": 239, "input_tokens": 175, "output_tokens": 64, "cost": 0.00053875},
+                TranscriptionUsageTokensObject,
+            ),
+        ],
+    )
+    def test_transform_audio_transcription_response_supports_live_usage_variants(
+        self,
+        provider_usage: Mapping[str, object],
+        expected_usage_type: type[TranscriptionUsageDurationObject] | type[TranscriptionUsageTokensObject],
+    ) -> None:
+        raw_response = httpx.Response(
+            200,
+            json={"text": "Four score and seven years ago", "usage": provider_usage},
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/audio/transcriptions"),
+        )
+
+        response = self.config.transform_audio_transcription_response(raw_response)
+
+        assert isinstance(response.usage, expected_usage_type)
+        assert get_response_cost_from_hidden_params(response._hidden_params) == provider_usage["cost"]
+        if isinstance(response.usage, TranscriptionUsageDurationObject):
+            assert response.usage.seconds == provider_usage["seconds"]
+            assert response._hidden_params["audio_transcription_duration"] == provider_usage["seconds"]
+        else:
+            assert response.usage.input_tokens == provider_usage["input_tokens"]
+            assert response.usage.output_tokens == provider_usage["output_tokens"]
+            assert response.usage.total_tokens == provider_usage["total_tokens"]
+            assert "audio_transcription_duration" not in response._hidden_params
 
     def test_transform_audio_transcription_response_raises_openrouter_error(self) -> None:
         raw_response = httpx.Response(
