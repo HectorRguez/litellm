@@ -103,6 +103,10 @@ def get_openrouter_error_message(response_body: str | bytes, default: str) -> st
             return response.message or default
 
 
+def parse_openrouter_error_message(response_content: str | bytes, default: str) -> str:
+    return get_openrouter_error_message(response_body=response_content, default=default)
+
+
 def raise_openrouter_error(raw_response: httpx.Response) -> None:
     if 200 <= raw_response.status_code < 300:
         return
