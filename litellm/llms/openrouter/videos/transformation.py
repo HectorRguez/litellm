@@ -1,7 +1,7 @@
 import base64
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, Tuple, Union, runtime_checkable
 from urllib.parse import quote
 
 import httpx
@@ -58,15 +58,15 @@ class _BinaryFile(Protocol):
 class _OpenRouterVideoUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    cost: Optional[float] = None
-    is_byok: Optional[bool] = None
+    cost: float | None = None
+    is_byok: bool | None = None
 
 
 class _OpenRouterVideoError(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    code: Optional[Union[str, int]] = None
-    message: Optional[str] = None
+    code: Union[str, int] | None = None
+    message: str | None = None
 
 
 class _OpenRouterVideoResponse(BaseModel):
@@ -74,19 +74,19 @@ class _OpenRouterVideoResponse(BaseModel):
 
     id: str
     status: Literal["pending", "in_progress", "completed", "failed", "cancelled", "expired"]
-    error: Optional[Union[str, _OpenRouterVideoError]] = None
-    generation_id: Optional[str] = None
-    model: Optional[str] = None
-    polling_url: Optional[str] = None
+    error: Union[str, _OpenRouterVideoError] | None = None
+    generation_id: str | None = None
+    model: str | None = None
+    polling_url: str | None = None
     unsigned_urls: Tuple[str, ...] = ()
-    usage: Optional[_OpenRouterVideoUsage] = None
+    usage: _OpenRouterVideoUsage | None = None
 
 
 class _OpenRouterErrorEnvelope(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    error: Optional[Union[str, _OpenRouterVideoError]] = None
-    message: Optional[str] = None
+    error: Union[str, _OpenRouterVideoError] | None = None
+    message: str | None = None
 
 
 class OpenRouterVideoConfig(BaseVideoConfig):
@@ -137,8 +137,8 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         self,
         headers: dict[str, str],
         model: str,
-        api_key: Optional[str] = None,
-        litellm_params: Optional[GenericLiteLLMParams] = None,
+        api_key: str | None = None,
+        litellm_params: GenericLiteLLMParams | None = None,
     ) -> dict[str, str]:
         params_api_key = litellm_params.api_key if litellm_params is not None else None
         resolved_api_key = (
@@ -165,7 +165,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
     def get_complete_url(
         self,
         model: str,
-        api_base: Optional[str],
+        api_base: str | None,
         litellm_params: dict[str, object],
     ) -> str:
         return (api_base or litellm.api_base or get_secret_str("OPENROUTER_API_BASE") or _OPENROUTER_API_BASE).rstrip(
@@ -198,8 +198,8 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         model: str,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
-        request_data: Optional[dict[str, object]] = None,
+        custom_llm_provider: str | None = None,
+        request_data: dict[str, object] | None = None,
     ) -> VideoObject:
         return self._to_video_object(
             response=self._parse_video_response(raw_response),
@@ -214,7 +214,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
-        variant: Optional[str] = None,
+        variant: str | None = None,
     ) -> Tuple[str, dict[str, object]]:
         encoded_video_id = self._encoded_original_video_id(video_id)
         index_query = "" if variant is None else f"?index={quote(variant, safe='')}"
@@ -235,7 +235,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
-        extra_body: Optional[dict[str, object]] = None,
+        extra_body: dict[str, object] | None = None,
     ) -> Tuple[str, dict[str, object]]:
         raise NotImplementedError("video remix is not supported for OpenRouter")
 
@@ -243,7 +243,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
     ) -> VideoObject:
         raise NotImplementedError("video remix is not supported for OpenRouter")
 
@@ -252,10 +252,10 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
-        after: Optional[str] = None,
-        limit: Optional[int] = None,
-        order: Optional[str] = None,
-        extra_query: Optional[dict[str, object]] = None,
+        after: str | None = None,
+        limit: int | None = None,
+        order: str | None = None,
+        extra_query: dict[str, object] | None = None,
     ) -> Tuple[str, dict[str, object]]:
         raise NotImplementedError("video list is not supported for OpenRouter")
 
@@ -263,7 +263,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
     ) -> dict[str, str]:
         raise NotImplementedError("video list is not supported for OpenRouter")
 
@@ -296,7 +296,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
     ) -> VideoObject:
         response = self._parse_video_response(raw_response)
         return self._to_video_object(
@@ -342,9 +342,9 @@ class OpenRouterVideoConfig(BaseVideoConfig):
     def _to_video_object(
         self,
         response: _OpenRouterVideoResponse,
-        custom_llm_provider: Optional[str],
-        model: Optional[str],
-        request_data: Optional[Mapping[str, object]],
+        custom_llm_provider: str | None,
+        model: str | None,
+        request_data: Mapping[str, object] | None,
     ) -> VideoObject:
         video_id = (
             encode_video_id_with_provider(response.id, custom_llm_provider, model)
@@ -368,9 +368,9 @@ class OpenRouterVideoConfig(BaseVideoConfig):
 
     def _usage(
         self,
-        response_usage: Optional[_OpenRouterVideoUsage],
-        duration: Optional[object],
-        size: Optional[object],
+        response_usage: _OpenRouterVideoUsage | None,
+        duration: object | None,
+        size: object | None,
     ) -> dict[str, object]:
         return {
             **({"cost": response_usage.cost} if response_usage is not None and response_usage.cost is not None else {}),
@@ -383,14 +383,14 @@ class OpenRouterVideoConfig(BaseVideoConfig):
             **({"video_resolution": str(size)} if size is not None else {}),
         }
 
-    def _video_error(self, error: Optional[Union[str, _OpenRouterVideoError]]) -> Optional[dict[str, object]]:
+    def _video_error(self, error: Union[str, _OpenRouterVideoError] | None) -> dict[str, object] | None:
         if error is None:
             return None
         if isinstance(error, str):
             return {"message": error}
         return _OBJECT_MAPPING_ADAPTER.validate_python(error.model_dump(exclude_none=True))
 
-    def _error_message(self, error: Optional[Union[str, _OpenRouterVideoError]]) -> Optional[str]:
+    def _error_message(self, error: Union[str, _OpenRouterVideoError] | None) -> str | None:
         if error is None:
             return None
         if isinstance(error, str):
@@ -439,7 +439,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
             return self._data_url(file_reference, explicit_content_type)
         return self._data_url(reference, None)
 
-    def _data_url(self, reference: object, explicit_content_type: Optional[str]) -> str:
+    def _data_url(self, reference: object, explicit_content_type: str | None) -> str:
         image_bytes = self._read_image_bytes(reference)
         content_type = explicit_content_type or ImageEditRequestUtils.get_image_content_type(image_bytes)
         return f"data:{content_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
