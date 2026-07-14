@@ -7476,7 +7476,9 @@ async def atranscription(*args, **kwargs) -> TranscriptionResponse:
         # tricks the OpenAI SDK's "best match deserialization" into thinking
         # a plain Transcription is a TranscriptionVerbose/Diarized type.
         if response is not None and not isinstance(response, Coroutine) and file is not None:
-            existing_duration = getattr(response, "duration", None)
+            existing_duration = response._hidden_params.get(
+                "audio_transcription_duration", getattr(response, "duration", None)
+            )
             if existing_duration is None:
                 calculated_duration = calculate_request_duration(file)
                 if calculated_duration is not None:
@@ -7714,7 +7716,7 @@ def transcription(
             api_base=api_base,
             api_key=api_key,
             custom_llm_provider=custom_llm_provider,
-            headers={},
+            headers=extra_headers,
             provider_config=provider_config,
             shared_session=shared_session,
         )
@@ -7722,7 +7724,9 @@ def transcription(
     # Store duration in _hidden_params for cost calculation without
     # exposing it in the response body (see sync path comment above).
     if response is not None and not isinstance(response, Coroutine):
-        existing_duration = getattr(response, "duration", None)
+        existing_duration = response._hidden_params.get(
+            "audio_transcription_duration", getattr(response, "duration", None)
+        )
         if existing_duration is None:
             calculated_duration = calculate_request_duration(file)
             if calculated_duration is not None:
