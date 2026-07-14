@@ -1352,8 +1352,11 @@ def completion_cost(
                     if custom_pricing and litellm_logging_obj is not None:
                         _litellm_params = getattr(litellm_logging_obj, "litellm_params", None)
                         if _litellm_params is not None:
-                            _metadata = _litellm_params.get("metadata", {}) or {}
-                            _video_model_info = _metadata.get("model_info", None)
+                            for _metadata_key in ("metadata", "litellm_metadata"):
+                                _metadata = _litellm_params.get(_metadata_key, {}) or {}
+                                _video_model_info = _metadata.get("model_info", None)
+                                if _video_model_info is not None:
+                                    break
 
                     usage_obj = getattr(completion_response, "usage", None)
                     duration_seconds: Optional[float] = None
