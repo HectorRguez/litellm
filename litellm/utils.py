@@ -8966,6 +8966,12 @@ class ProviderConfigManager:
             )
 
             return AWSPollyTextToSpeechConfig()
+        elif litellm.LlmProviders.OPENROUTER == provider:
+            from litellm.llms.openrouter.text_to_speech.transformation import (
+                OpenRouterTextToSpeechConfig,
+            )
+
+            return OpenRouterTextToSpeechConfig()
         return None
 
     @staticmethod

@@ -8032,6 +8032,54 @@ def speech(
             client=client,
             _is_async=aspeech or False,
         )
+    elif custom_llm_provider == "openrouter":
+        from litellm.llms.openrouter.common_utils import merge_openrouter_headers
+
+        if text_to_speech_provider_config is None:
+            raise litellm.BadRequestError(
+                message="OpenRouter Text-to-Speech configuration not found",
+                model=model,
+                llm_provider=custom_llm_provider,
+            )
+
+        openrouter_voice = voice.strip() if isinstance(voice, str) else None
+        if openrouter_voice is None or not openrouter_voice:
+            raise litellm.BadRequestError(
+                message="'voice' is required to be passed as a string for OpenRouter TTS",
+                model=model,
+                llm_provider=custom_llm_provider,
+            )
+
+        openrouter_api_base_items = (("api_base", api_base),) if api_base is not None else ()
+        openrouter_api_key_items = (("api_key", api_key),) if api_key is not None else ()
+        openrouter_litellm_param_items = (
+            *litellm_params_dict.items(),
+            *openrouter_api_base_items,
+            *openrouter_api_key_items,
+        )
+        openrouter_litellm_params = dict(  # mutable-ok: shared TTS handler requires mutable LiteLLM params
+            openrouter_litellm_param_items
+        )
+        openrouter_headers = merge_openrouter_headers(
+            global_headers=litellm.headers,
+            headers=headers,
+            extra_headers=extra_headers,
+        )
+
+        response = base_llm_http_handler.text_to_speech_handler(
+            model=model,
+            input=input,
+            voice=openrouter_voice,
+            text_to_speech_provider_config=text_to_speech_provider_config,
+            text_to_speech_optional_params=optional_params,
+            custom_llm_provider=custom_llm_provider,
+            litellm_params=openrouter_litellm_params,
+            logging_obj=logging_obj,
+            timeout=timeout,
+            extra_headers=openrouter_headers,
+            client=client,
+            _is_async=aspeech or False,
+        )
     elif custom_llm_provider == "vertex_ai" or custom_llm_provider == "vertex_ai_beta":
         from litellm.llms.vertex_ai.text_to_speech.transformation import (
             VertexAITextToSpeechConfig,
