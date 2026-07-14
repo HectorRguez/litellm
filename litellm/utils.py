@@ -8686,6 +8686,10 @@ class ProviderConfigManager:
             from litellm.llms.openrouter.videos.transformation import OpenRouterVideoConfig
 
             return OpenRouterVideoConfig()
+        elif LlmProviders.FAL_AI == provider:
+            from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
+
+            return FalAIVideoConfig()
         return None
 
     @staticmethod
