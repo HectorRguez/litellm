@@ -7476,7 +7476,9 @@ async def atranscription(*args, **kwargs) -> TranscriptionResponse:
         # tricks the OpenAI SDK's "best match deserialization" into thinking
         # a plain Transcription is a TranscriptionVerbose/Diarized type.
         if response is not None and not isinstance(response, Coroutine) and file is not None:
-            existing_duration = getattr(response, "duration", None)
+            existing_duration = response._hidden_params.get(
+                "audio_transcription_duration", getattr(response, "duration", None)
+            )
             if existing_duration is None:
                 calculated_duration = calculate_request_duration(file)
                 if calculated_duration is not None:
@@ -7714,7 +7716,7 @@ def transcription(
             api_base=api_base,
             api_key=api_key,
             custom_llm_provider=custom_llm_provider,
-            headers={},
+            headers=extra_headers,
             provider_config=provider_config,
             shared_session=shared_session,
         )
@@ -7722,7 +7724,9 @@ def transcription(
     # Store duration in _hidden_params for cost calculation without
     # exposing it in the response body (see sync path comment above).
     if response is not None and not isinstance(response, Coroutine):
-        existing_duration = getattr(response, "duration", None)
+        existing_duration = response._hidden_params.get(
+            "audio_transcription_duration", getattr(response, "duration", None)
+        )
         if existing_duration is None:
             calculated_duration = calculate_request_duration(file)
             if calculated_duration is not None:
@@ -8029,6 +8033,54 @@ def speech(
             logging_obj=logging_obj,
             timeout=timeout,
             extra_headers=extra_headers,
+            client=client,
+            _is_async=aspeech or False,
+        )
+    elif custom_llm_provider == "openrouter":
+        from litellm.llms.openrouter.common_utils import merge_openrouter_headers
+
+        if text_to_speech_provider_config is None:
+            raise litellm.BadRequestError(
+                message="OpenRouter Text-to-Speech configuration not found",
+                model=model,
+                llm_provider=custom_llm_provider,
+            )
+
+        openrouter_voice = voice.strip() if isinstance(voice, str) else None
+        if openrouter_voice is None or not openrouter_voice:
+            raise litellm.BadRequestError(
+                message="'voice' is required to be passed as a string for OpenRouter TTS",
+                model=model,
+                llm_provider=custom_llm_provider,
+            )
+
+        openrouter_api_base_items = (("api_base", api_base),) if api_base is not None else ()
+        openrouter_api_key_items = (("api_key", api_key),) if api_key is not None else ()
+        openrouter_litellm_param_items = (
+            *litellm_params_dict.items(),
+            *openrouter_api_base_items,
+            *openrouter_api_key_items,
+        )
+        openrouter_litellm_params = dict(  # mutable-ok: shared TTS handler requires mutable LiteLLM params
+            openrouter_litellm_param_items
+        )
+        openrouter_headers = merge_openrouter_headers(
+            global_headers=litellm.headers,
+            headers=headers,
+            extra_headers=extra_headers,
+        )
+
+        response = base_llm_http_handler.text_to_speech_handler(
+            model=model,
+            input=input,
+            voice=openrouter_voice,
+            text_to_speech_provider_config=text_to_speech_provider_config,
+            text_to_speech_optional_params=optional_params,
+            custom_llm_provider=custom_llm_provider,
+            litellm_params=openrouter_litellm_params,
+            logging_obj=logging_obj,
+            timeout=timeout,
+            extra_headers=openrouter_headers,
             client=client,
             _is_async=aspeech or False,
         )

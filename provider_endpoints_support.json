@@ -1886,11 +1886,12 @@
         "responses": true,
         "embeddings": true,
         "image_generations": false,
-        "audio_transcriptions": false,
-        "audio_speech": false,
+        "audio_transcriptions": true,
+        "audio_speech": true,
         "moderations": false,
         "batches": false,
         "rerank": false,
+        "video_generations": true,
         "a2a": true,
         "interactions": true
       }
