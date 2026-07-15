@@ -653,7 +653,11 @@ def cost_per_token(
     else:
         model_info = _cached_get_model_info_helper(model=model, custom_llm_provider=custom_llm_provider)
 
-        if (model_info.get("input_cost_per_token") or 0.0) > 0 or (model_info.get("output_cost_per_token") or 0.0) > 0:
+        if (
+            (model_info.get("input_cost_per_token") or 0.0) > 0
+            or (model_info.get("output_cost_per_token") or 0.0) > 0
+            or model_info.get("input_cost_per_request") is not None
+        ):
             return generic_cost_per_token(
                 model=model,
                 usage=usage_block,
@@ -762,6 +766,7 @@ def _select_model_name_for_cost_calc(
             entry = litellm.model_cost[router_model_id]
             if (
                 entry.get("input_cost_per_token") is not None
+                or entry.get("input_cost_per_request") is not None
                 or entry.get("input_cost_per_second") is not None
                 or entry.get("tiered_pricing") is not None
             ):
@@ -1787,11 +1792,11 @@ def response_cost_calculator(
                 if hasattr(response_object, "_hidden_params"):
                     response_object._hidden_params["optional_params"] = optional_params
                     provider_response_cost = get_response_cost_from_hidden_params(response_object._hidden_params)
-                    if provider_response_cost is not None:
+                    if provider_response_cost is not None and (provider_response_cost != 0 or not custom_pricing):
                         return provider_response_cost
                 if custom_llm_provider == "openrouter":
                     provider_response_cost = get_response_cost_from_usage(response_object)
-                    if provider_response_cost is not None:
+                    if provider_response_cost is not None and (provider_response_cost != 0 or not custom_pricing):
                         return provider_response_cost
 
             response_cost = completion_cost(
