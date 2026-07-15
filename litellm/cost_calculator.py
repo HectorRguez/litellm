@@ -1708,6 +1708,21 @@ def get_response_cost_from_hidden_params(
     return None
 
 
+def get_response_cost_from_usage(
+    response_object: BaseModel,
+) -> float | None:
+    usage = getattr(response_object, "usage", None)
+    if isinstance(usage, BaseModel):
+        response_cost = getattr(usage, "cost", None)
+    elif isinstance(usage, dict):
+        response_cost = usage.get("cost")
+    else:
+        response_cost = None
+    if response_cost is None:
+        return None
+    return float(response_cost)
+
+
 def response_cost_calculator(
     response_object: Union[
         ModelResponse,
@@ -1772,6 +1787,10 @@ def response_cost_calculator(
                 if hasattr(response_object, "_hidden_params"):
                     response_object._hidden_params["optional_params"] = optional_params
                     provider_response_cost = get_response_cost_from_hidden_params(response_object._hidden_params)
+                    if provider_response_cost is not None:
+                        return provider_response_cost
+                if custom_llm_provider == "openrouter":
+                    provider_response_cost = get_response_cost_from_usage(response_object)
                     if provider_response_cost is not None:
                         return provider_response_cost
 
