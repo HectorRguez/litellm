@@ -278,6 +278,10 @@ def get_logging_payload(kwargs, response_obj, start_time, end_time) -> SpendLogs
 
     id = get_spend_logs_id(call_type or "acompletion", response_obj_dict, kwargs)
     standard_logging_payload = cast(Optional[StandardLoggingPayload], kwargs.get("standard_logging_object", None))
+    if call_type in ("video_content", "avideo_content") and standard_logging_payload is not None:
+        standard_logging_id = standard_logging_payload.get("id")
+        if standard_logging_id:
+            id = standard_logging_id
 
     end_user_id = get_end_user_id_for_cost_tracking(litellm_params)
 
