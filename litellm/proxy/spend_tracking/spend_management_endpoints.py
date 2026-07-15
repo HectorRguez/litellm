@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Dict,
     List,
@@ -46,6 +47,80 @@ else:
 router = APIRouter()
 
 SPEND_LOGS_PAGINATION_COUNT_CAP = 10000
+
+
+@router.post(
+    "/spend/report",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=ExternalSpendReportResponse,
+)
+async def report_external_spend(
+    data: ExternalSpendReportRequest,
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
+) -> ExternalSpendReportResponse:
+    from litellm.proxy.proxy_server import (
+        litellm_proxy_budget_name,
+        prisma_client,
+        proxy_logging_obj,
+        user_api_key_cache,
+    )
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not connected",
+        )
+
+    external_request_id = f"external:{data.provider}:{data.request_id}"
+    now = datetime.now(timezone.utc)
+    metadata = {
+        "user_api_key": user_api_key_dict.api_key,
+        "user_api_key_alias": user_api_key_dict.key_alias,
+        "user_api_key_team_id": user_api_key_dict.team_id,
+        "user_api_key_org_id": user_api_key_dict.org_id,
+        "user_api_key_user_id": user_api_key_dict.user_id,
+        "user_api_key_end_user_id": data.end_user,
+        "tags": data.tags,
+        "spend_logs_metadata": data.metadata,
+    }
+    kwargs = {
+        "model": data.model,
+        "custom_llm_provider": data.provider,
+        "call_type": "external_spend",
+        "litellm_call_id": external_request_id,
+        "response_cost": data.spend,
+        "litellm_params": {
+            "metadata": metadata,
+            "user_api_key_end_user_id": data.end_user,
+        },
+    }
+    payload = get_logging_payload(
+        kwargs=kwargs,
+        response_obj={},
+        start_time=now,
+        end_time=now,
+    )
+    payload["request_id"] = external_request_id
+    payload["spend"] = data.spend
+    created = await proxy_logging_obj.db_spend_update_writer.report_external_spend(
+        payload=payload,
+        response_cost=data.spend,
+        user_id=user_api_key_dict.user_id,
+        hashed_token=user_api_key_dict.api_key,
+        team_id=user_api_key_dict.team_id,
+        org_id=user_api_key_dict.org_id,
+        end_user_id=data.end_user,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        litellm_proxy_budget_name=litellm_proxy_budget_name,
+    )
+    return ExternalSpendReportResponse(
+        request_id=external_request_id,
+        spend=data.spend,
+        created=created,
+    )
 
 
 @router.get(

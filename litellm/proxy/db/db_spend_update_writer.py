@@ -222,6 +222,44 @@ class DBSpendUpdateWriter:
                 end_user_id,
             )
 
+    async def report_external_spend(
+        self,
+        *,
+        payload: SpendLogsPayload,
+        response_cost: float,
+        user_id: str | None,
+        hashed_token: str | None,
+        team_id: str | None,
+        org_id: str | None,
+        end_user_id: str | None,
+        prisma_client: PrismaClient,
+        user_api_key_cache: DualCache,
+        litellm_proxy_budget_name: str | None,
+    ) -> bool:
+        from litellm.repositories.table_repositories import SpendLogsRepository
+
+        db_payload = prisma_client.jsonify_object({**payload})
+        result = await SpendLogsRepository(prisma_client).table.create_many(
+            data=[db_payload],
+            skip_duplicates=True,
+        )
+        if result.count == 0:
+            return False
+
+        await self._batch_database_updates(
+            response_cost=response_cost,
+            user_id=user_id,
+            hashed_token=hashed_token,
+            team_id=team_id,
+            org_id=org_id,
+            end_user_id=end_user_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            litellm_proxy_budget_name=litellm_proxy_budget_name,
+            payload=payload,
+        )
+        return True
+
     def _enqueue_tool_registry_upsert(
         self,
         kwargs: Optional[dict],
