@@ -170,7 +170,9 @@ class FalAIVideoConfig(BaseVideoConfig):
         self._async_media_fetcher = async_media_fetcher
         self._sync_pricing_fetcher = sync_pricing_fetcher
         self._async_pricing_fetcher = async_pricing_fetcher
-        self._pricing_cache = pricing_cache or cast(_PricingCache, litellm.in_memory_llm_clients_cache)
+        self._pricing_cache = pricing_cache or cast(  # cast-ok: LiteLLM's client cache implements this protocol
+            _PricingCache, litellm.in_memory_llm_clients_cache
+        )
 
     def get_supported_openai_params(self, model: str) -> list[str]:
         return [
@@ -305,7 +307,11 @@ class FalAIVideoConfig(BaseVideoConfig):
         self._raise_for_error(raw_response)
         response = _FalQueueStatusResponse.model_validate_json(raw_response.content)
         queue_root = self._queue_root_from_response(response)
-        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(cast(object, logging_obj.optional_params))
+        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(
+            cast(  # cast-ok: the adapter validates this legacy untyped logging field
+                object, logging_obj.optional_params
+            )
+        )
         original_video_id = optional_params.get("video_id")
         original_model = (
             decode_video_id_with_provider(original_video_id).get("model_id")
@@ -480,15 +486,19 @@ class FalAIVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> _FalCostContext | None:
-        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(cast(object, logging_obj.optional_params))
+        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(
+            cast(  # cast-ok: the adapter validates this legacy untyped logging field
+                object, logging_obj.optional_params
+            )
+        )
         encoded_video_id = optional_params.get("video_id")
         if not isinstance(encoded_video_id, str):
             return None
         decoded_video_id = decode_video_id_with_provider(encoded_video_id)
         endpoint_id = decoded_video_id.get("model_id")
         request_id = decoded_video_id.get("video_id")
-        request_headers = _STRING_MAPPING_ADAPTER.validate_python(cast(object, raw_response.request.headers))
-        response_headers = _STRING_MAPPING_ADAPTER.validate_python(cast(object, raw_response.headers))
+        request_headers = _STRING_MAPPING_ADAPTER.validate_python(raw_response.request.headers)
+        response_headers = _STRING_MAPPING_ADAPTER.validate_python(raw_response.headers)
         authorization = request_headers.get("authorization")
         raw_billable_units = response_headers.get("x-fal-billable-units")
         if not isinstance(endpoint_id, str) or not endpoint_id:
