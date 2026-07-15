@@ -17,6 +17,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.litellm_logging import Logging as LitellmLogging
 from litellm.litellm_core_utils.litellm_logging import set_callbacks
 from litellm.types.utils import ModelResponse, TextCompletionResponse
+from litellm.types.videos.main import VideoObject
 
 
 @pytest.fixture
@@ -3191,6 +3192,47 @@ def test_success_handler_preserves_precomputed_cost_for_dict_response():
         )
         mock_calc.assert_not_called()
         assert logging_obj.model_call_details["response_cost"] == precomputed_cost
+
+
+def test_video_content_normalization_creates_idempotent_cost_record() -> None:
+    logging_obj = LitellmLogging(
+        model="",
+        messages=None,
+        stream=False,
+        call_type="avideo_content",
+        litellm_call_id="content-call-id",
+        start_time=time.time(),
+        function_id="test-fn",
+    )
+    logging_obj.model_call_details["response_cost"] = 2.1
+    logging_obj.model_call_details["provider_cost_tracking_id"] = (
+        "fal-video-cost:request-123"
+    )
+    logging_obj.model_call_details["provider_cost_tracking_model"] = (
+        "fal-ai/heygen/avatar5/digital-twin"
+    )
+
+    normalized = logging_obj.normalize_logging_result(b"video-bytes")
+
+    assert isinstance(normalized, VideoObject)
+    assert normalized.id == "fal-video-cost:request-123"
+    assert normalized.model == "fal-ai/heygen/avatar5/digital-twin"
+    assert normalized._hidden_params == {"response_cost": 2.1}
+    assert b"video-bytes" not in repr(normalized).encode()
+
+    with patch(
+        "litellm.litellm_core_utils.litellm_logging.emit_standard_logging_payload"
+    ):
+        logging_obj._success_handler_helper_fn(
+            result=b"video-bytes",
+            start_time=time.time(),
+            end_time=time.time(),
+        )
+
+    payload = logging_obj.model_call_details["standard_logging_object"]
+    assert payload["id"] == "fal-video-cost:request-123"
+    assert payload["response_cost"] == 2.1
+    assert "video-bytes" not in repr(payload)
 
 
 def test_success_handler_unified_helper_runs_for_typed_results():

@@ -1,12 +1,16 @@
+import hashlib
 from collections.abc import Awaitable, Callable
+from decimal import Decimal, InvalidOperation
 from math import gcd
+from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urlparse
 
 import httpx
 from httpx._types import RequestFiles
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 import litellm
+from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.url_utils import (
     async_safe_get,
     encode_url_path_segment,
@@ -22,6 +26,11 @@ from litellm.types.videos.utils import (
     decode_video_id_with_provider,
     encode_video_id_with_provider,
 )
+
+if TYPE_CHECKING:
+    from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+else:
+    LiteLLMLoggingObj = object
 
 
 class _FalQueueSubmitResponse(BaseModel):
@@ -53,12 +62,46 @@ class _FalVideoResult(BaseModel):
     video: _FalVideoFile
 
 
+class _FalPrice(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    endpoint_id: str
+    unit_price: Decimal
+    unit: str
+    currency: str
+
+
+class _FalPricingResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    prices: tuple[_FalPrice, ...]
+
+
+class _FalCostContext(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    authorization: str
+    billable_units: Decimal
+    endpoint_id: str
+    request_id: str
+
+
+class _PricingCache(Protocol):
+    def get_cache(self, key: str) -> object | None: ...
+
+    def set_cache(self, key: str, value: object, ttl: int) -> None: ...
+
+
 _SyncMediaFetcher = Callable[[str], httpx.Response]
 _AsyncMediaFetcher = Callable[[str], Awaitable[httpx.Response]]
+_SyncPricingFetcher = Callable[[str, str], httpx.Response]
+_AsyncPricingFetcher = Callable[[str, str], Awaitable[httpx.Response]]
 _HTTP_RESPONSE_ADAPTER = TypeAdapter(
     httpx.Response,
     config=ConfigDict(arbitrary_types_allowed=True),
 )
+_OBJECT_MAPPING_ADAPTER = TypeAdapter(dict[str, object])
+_STRING_MAPPING_ADAPTER = TypeAdapter(dict[str, str])
 
 
 def _sync_media_fetcher(url: str) -> httpx.Response:
@@ -71,8 +114,34 @@ async def _async_media_fetcher(url: str) -> httpx.Response:
     )
 
 
+def _sync_pricing_fetcher(endpoint_id: str, authorization: str) -> httpx.Response:
+    return _HTTP_RESPONSE_ADAPTER.validate_python(
+        safe_get(
+            litellm.module_level_client,
+            FalAIVideoConfig.PRICING_URL,
+            headers={"Authorization": authorization},
+            params={"endpoint_id": endpoint_id},
+            timeout=30.0,
+        )
+    )
+
+
+async def _async_pricing_fetcher(endpoint_id: str, authorization: str) -> httpx.Response:
+    return _HTTP_RESPONSE_ADAPTER.validate_python(
+        await async_safe_get(
+            litellm.module_level_aclient,
+            FalAIVideoConfig.PRICING_URL,
+            headers={"Authorization": authorization},
+            params={"endpoint_id": endpoint_id},
+            timeout=30.0,
+        )
+    )
+
+
 class FalAIVideoConfig(BaseVideoConfig):
     DEFAULT_BASE_URL = "https://queue.fal.run"
+    PRICING_URL = "https://api.fal.ai/v1/models/pricing"
+    PRICING_CACHE_TTL_SECONDS = 600
     _QUEUE_NAMESPACES = frozenset(("comfy", "workflows"))
     _STANDARD_PARAMS = frozenset(
         (
@@ -92,10 +161,16 @@ class FalAIVideoConfig(BaseVideoConfig):
         self,
         sync_media_fetcher: _SyncMediaFetcher = _sync_media_fetcher,
         async_media_fetcher: _AsyncMediaFetcher = _async_media_fetcher,
+        sync_pricing_fetcher: _SyncPricingFetcher = _sync_pricing_fetcher,
+        async_pricing_fetcher: _AsyncPricingFetcher = _async_pricing_fetcher,
+        pricing_cache: _PricingCache | None = None,
     ) -> None:
         super().__init__()
         self._sync_media_fetcher = sync_media_fetcher
         self._async_media_fetcher = async_media_fetcher
+        self._sync_pricing_fetcher = sync_pricing_fetcher
+        self._async_pricing_fetcher = async_pricing_fetcher
+        self._pricing_cache = pricing_cache or cast(_PricingCache, litellm.in_memory_llm_clients_cache)
 
     def get_supported_openai_params(self, model: str) -> list[str]:
         return [
@@ -180,7 +255,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         self,
         model: str,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
         request_data: dict[str, object] | None = None,
     ) -> VideoObject:
@@ -224,14 +299,22 @@ class FalAIVideoConfig(BaseVideoConfig):
     def transform_video_status_retrieve_response(
         self,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
         self._raise_for_error(raw_response)
         response = _FalQueueStatusResponse.model_validate_json(raw_response.content)
         queue_root = self._queue_root_from_response(response)
+        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(cast(object, logging_obj.optional_params))
+        original_video_id = optional_params.get("video_id")
+        original_model = (
+            decode_video_id_with_provider(original_video_id).get("model_id")
+            if isinstance(original_video_id, str)
+            else None
+        )
+        response_model = original_model or queue_root
         video_id = (
-            encode_video_id_with_provider(response.request_id, custom_llm_provider, queue_root)
+            encode_video_id_with_provider(response.request_id, custom_llm_provider, response_model)
             if custom_llm_provider
             else response.request_id
         )
@@ -240,7 +323,7 @@ class FalAIVideoConfig(BaseVideoConfig):
             id=video_id,
             object="video",
             status=self._status(response.status, error_message),
-            model=queue_root,
+            model=response_model,
             error={"message": error_message} if error_message is not None else None,
         )
 
@@ -265,10 +348,11 @@ class FalAIVideoConfig(BaseVideoConfig):
     def transform_video_content_response(
         self,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
         self._raise_for_error(raw_response)
         result = _FalVideoResult.model_validate_json(raw_response.content)
+        self._track_sync_provider_cost(raw_response, logging_obj)
         media_response = self._sync_media_fetcher(result.video.url)
         media_response.raise_for_status()
         return media_response.content
@@ -276,10 +360,11 @@ class FalAIVideoConfig(BaseVideoConfig):
     async def async_transform_video_content_response(
         self,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
         self._raise_for_error(raw_response)
         result = _FalVideoResult.model_validate_json(raw_response.content)
+        await self._track_async_provider_cost(raw_response, logging_obj)
         media_response = await self._async_media_fetcher(result.video.url)
         media_response.raise_for_status()
         return media_response.content
@@ -298,7 +383,7 @@ class FalAIVideoConfig(BaseVideoConfig):
     def transform_video_remix_response(
         self,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
         raise NotImplementedError("video remix is not supported for fal.ai")
@@ -318,7 +403,7 @@ class FalAIVideoConfig(BaseVideoConfig):
     def transform_video_list_response(
         self,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
     ) -> dict[str, str]:
         raise NotImplementedError("video list is not supported for fal.ai")
@@ -335,7 +420,7 @@ class FalAIVideoConfig(BaseVideoConfig):
     def transform_video_delete_response(
         self,
         raw_response: httpx.Response,
-        logging_obj: object,
+        logging_obj: LiteLLMLoggingObj,
     ) -> VideoObject:
         raise NotImplementedError("video deletion is not supported for fal.ai")
 
@@ -358,6 +443,121 @@ class FalAIVideoConfig(BaseVideoConfig):
                 status_code=raw_response.status_code,
                 headers=raw_response.headers,
             )
+
+    def _track_sync_provider_cost(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        try:
+            context = self._cost_context(raw_response, logging_obj)
+            if context is None:
+                return
+            price = self._get_cached_price(context) or self._fetch_sync_price(context)
+            if price is not None:
+                self._record_provider_cost(context, price, logging_obj)
+        except (httpx.HTTPError, RuntimeError, TypeError, ValidationError, ValueError) as exc:
+            verbose_logger.warning("Unable to track fal.ai provider cost: %s", type(exc).__name__)
+
+    async def _track_async_provider_cost(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        try:
+            context = self._cost_context(raw_response, logging_obj)
+            if context is None:
+                return
+            cached_price = self._get_cached_price(context)
+            price = cached_price if cached_price is not None else await self._fetch_async_price(context)
+            if price is not None:
+                self._record_provider_cost(context, price, logging_obj)
+        except (httpx.HTTPError, RuntimeError, TypeError, ValidationError, ValueError) as exc:
+            verbose_logger.warning("Unable to track fal.ai provider cost: %s", type(exc).__name__)
+
+    def _cost_context(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> _FalCostContext | None:
+        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(cast(object, logging_obj.optional_params))
+        encoded_video_id = optional_params.get("video_id")
+        if not isinstance(encoded_video_id, str):
+            return None
+        decoded_video_id = decode_video_id_with_provider(encoded_video_id)
+        endpoint_id = decoded_video_id.get("model_id")
+        request_id = decoded_video_id.get("video_id")
+        request_headers = _STRING_MAPPING_ADAPTER.validate_python(cast(object, raw_response.request.headers))
+        response_headers = _STRING_MAPPING_ADAPTER.validate_python(cast(object, raw_response.headers))
+        authorization = request_headers.get("authorization")
+        raw_billable_units = response_headers.get("x-fal-billable-units")
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            return None
+        if not isinstance(request_id, str) or not request_id:
+            return None
+        if not isinstance(authorization, str) or not authorization:
+            return None
+        if raw_billable_units is None:
+            return None
+        try:
+            billable_units = Decimal(raw_billable_units)
+        except InvalidOperation:
+            return None
+        if not billable_units.is_finite() or billable_units < 0:
+            return None
+        return _FalCostContext(
+            authorization=authorization,
+            billable_units=billable_units,
+            endpoint_id=endpoint_id,
+            request_id=request_id,
+        )
+
+    def _fetch_sync_price(self, context: _FalCostContext) -> _FalPrice | None:
+        response = self._sync_pricing_fetcher(context.endpoint_id, context.authorization)
+        response.raise_for_status()
+        return self._cache_valid_price(context, response)
+
+    async def _fetch_async_price(self, context: _FalCostContext) -> _FalPrice | None:
+        response = await self._async_pricing_fetcher(context.endpoint_id, context.authorization)
+        response.raise_for_status()
+        return self._cache_valid_price(context, response)
+
+    def _cache_valid_price(self, context: _FalCostContext, response: httpx.Response) -> _FalPrice | None:
+        pricing = _FalPricingResponse.model_validate_json(response.content)
+        price = next((item for item in pricing.prices if item.endpoint_id == context.endpoint_id), None)
+        if price is None or price.currency.upper() != "USD":
+            return None
+        if not price.unit_price.is_finite() or price.unit_price < 0:
+            return None
+        self._pricing_cache.set_cache(
+            key=self._price_cache_key(context),
+            value=price,
+            ttl=self.PRICING_CACHE_TTL_SECONDS,
+        )
+        return price
+
+    def _get_cached_price(self, context: _FalCostContext) -> _FalPrice | None:
+        cached_price = self._pricing_cache.get_cache(key=self._price_cache_key(context))
+        if cached_price is None:
+            return None
+        try:
+            return _FalPrice.model_validate(cached_price)
+        except ValueError:
+            return None
+
+    def _price_cache_key(self, context: _FalCostContext) -> str:
+        credential_hash = hashlib.sha256(context.authorization.encode()).hexdigest()
+        return f"fal-pricing:{context.endpoint_id}:{credential_hash}"
+
+    def _record_provider_cost(
+        self,
+        context: _FalCostContext,
+        price: _FalPrice,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        logging_obj.model_call_details["response_cost"] = float(context.billable_units * price.unit_price)
+        logging_obj.model_call_details["provider_cost_tracking_id"] = f"fal-video-cost:{context.request_id}"
+        logging_obj.model_call_details["provider_cost_tracking_model"] = context.endpoint_id
 
     def _queue_root(self, model: str) -> str:
         model_parts = model.split("/")
