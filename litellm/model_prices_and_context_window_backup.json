@@ -30216,6 +30216,31 @@
         "supports_tool_choice": true,
         "supports_vision": true
     },
+    "openrouter/google/lyria-3-clip-preview": {
+        "input_cost_per_request": 0.04,
+        "input_cost_per_token": 0,
+        "litellm_provider": "openrouter",
+        "max_input_tokens": 131072,
+        "max_output_tokens": 8192,
+        "max_tokens": 8192,
+        "mode": "chat",
+        "output_cost_per_token": 0,
+        "source": "https://openrouter.ai/google/lyria-3-clip-preview",
+        "supported_modalities": [
+            "text"
+        ],
+        "supported_output_modalities": [
+            "audio"
+        ],
+        "supports_audio_input": false,
+        "supports_audio_output": true,
+        "supports_function_calling": false,
+        "supports_prompt_caching": false,
+        "supports_response_schema": false,
+        "supports_system_messages": false,
+        "supports_vision": false,
+        "supports_web_search": false
+    },
     "openrouter/gryphe/mythomax-l2-13b": {
         "input_cost_per_token": 1.875e-06,
         "litellm_provider": "openrouter",

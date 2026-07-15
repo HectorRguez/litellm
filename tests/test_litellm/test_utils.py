@@ -3155,6 +3155,21 @@ def test_gemini_lyria_3_preview_models_in_cost_map():
     assert clip["output_cost_per_image"] == 0.04
 
 
+def test_openrouter_lyria_3_clip_preview_in_cost_map():
+    import json
+    from pathlib import Path
+
+    json_path = Path(__file__).parents[2] / "model_prices_and_context_window.json"
+    with open(json_path) as f:
+        model_cost = json.load(f)
+
+    clip = model_cost.get("openrouter/google/lyria-3-clip-preview")
+    assert clip is not None
+    assert clip["litellm_provider"] == "openrouter"
+    assert clip["input_cost_per_request"] == 0.04
+    assert clip["supported_output_modalities"] == ["audio"]
+
+
 def test_model_info_for_fireworks_short_form_models():
     """
     Test that fireworks_ai short-form model entries (fireworks_ai/<model>)
