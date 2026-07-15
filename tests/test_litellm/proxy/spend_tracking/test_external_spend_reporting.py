@@ -11,6 +11,7 @@ from litellm.proxy._types import (
     SpendLogsPayload,
     UserAPIKeyAuth,
 )
+from litellm.proxy.auth.auth_utils import get_model_from_request
 from litellm.proxy.db.db_spend_update_writer import DBSpendUpdateWriter
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     report_external_spend,
@@ -21,7 +22,7 @@ def test_external_spend_report_rejects_negative_spend() -> None:
     with pytest.raises(ValidationError):
         ExternalSpendReportRequest(
             provider="fal",
-            model="fal-ai/gemini-3.1-flash-tts",
+            external_model="fal-ai/gemini-3.1-flash-tts",
             spend=-0.01,
             request_id="request-1",
         )
@@ -49,7 +50,7 @@ async def test_external_spend_report_uses_authenticated_attribution(
     )
     request = ExternalSpendReportRequest(
         provider="fal",
-        model="fal-ai/gemini-3.1-flash-tts",
+        external_model="fal-ai/gemini-3.1-flash-tts",
         spend=0.015,
         request_id="fal-request-1",
         end_user="course-user",
@@ -74,6 +75,18 @@ async def test_external_spend_report_uses_authenticated_attribution(
     assert payload["organization_id"] == "video-org"
     assert payload["end_user"] == "course-user"
     assert payload["request_tags"] == '["course:course-1", "video:video-1"]'
+
+
+def test_external_spend_model_is_not_treated_as_routing_model() -> None:
+    request_data = ExternalSpendReportRequest(
+        provider="fal",
+        external_model="fal-ai/gemini-3.1-flash-tts",
+        spend=0.015,
+        request_id="fal-request-1",
+    ).model_dump()
+
+    assert request_data["external_model"] == "fal-ai/gemini-3.1-flash-tts"
+    assert get_model_from_request(request_data, "/spend/report") is None
 
 
 @pytest.mark.asyncio

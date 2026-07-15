@@ -2950,7 +2950,7 @@ class LiteLLM_SpendLogs_ResponseObject(LiteLLMPydanticObjectBase):
 
 class ExternalSpendReportRequest(LiteLLMPydanticObjectBase):
     provider: str = Field(min_length=1, max_length=128)
-    model: str = Field(min_length=1, max_length=256)
+    external_model: str = Field(min_length=1, max_length=256)
     spend: float = Field(ge=0, allow_inf_nan=False)
     request_id: str = Field(min_length=1, max_length=256)
     end_user: str | None = Field(default=None, max_length=256)

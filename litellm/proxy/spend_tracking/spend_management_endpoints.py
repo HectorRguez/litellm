@@ -86,7 +86,7 @@ async def report_external_spend(
         "spend_logs_metadata": data.metadata,
     }
     kwargs = {
-        "model": data.model,
+        "model": data.external_model,
         "custom_llm_provider": data.provider,
         "call_type": "external_spend",
         "litellm_call_id": external_request_id,

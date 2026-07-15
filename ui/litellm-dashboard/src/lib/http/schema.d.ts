@@ -23693,12 +23693,12 @@ export interface components {
         ExternalSpendReportRequest: {
             /** End User */
             end_user?: string | null;
+            /** External Model */
+            external_model: string;
             /** Metadata */
             metadata?: {
                 [key: string]: string | number | boolean | null;
             };
-            /** Model */
-            model: string;
             /** Provider */
             provider: string;
             /** Request Id */
