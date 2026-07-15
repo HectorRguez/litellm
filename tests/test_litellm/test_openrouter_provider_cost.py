@@ -2,7 +2,6 @@ import copy
 
 import litellm
 from litellm.cost_calculator import response_cost_calculator
-from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.types.utils import ModelResponse, Usage
 from litellm.utils import _invalidate_model_cost_lowercase_map
 
@@ -69,44 +68,33 @@ def test_cost_calculator_uses_router_flat_request_pricing():
         _invalidate_model_cost_lowercase_map()
 
 
-def test_logging_recalculates_zero_hidden_cost_with_custom_pricing():
-    deployment_id = "openrouter-flat-request-streaming-test"
-    original_entry = copy.deepcopy(litellm.model_cost.get(deployment_id))
-
+def test_router_stream_recalculates_zero_hidden_cost_with_custom_pricing():
+    backend_model = "openrouter/custom-flat-request-streaming-test"
+    original_shared_entry = copy.deepcopy(litellm.model_cost.get(backend_model))
+    deployment_id = None
     try:
-        litellm.model_cost[deployment_id] = {
-            "litellm_provider": "openrouter",
-            "mode": "chat",
-            "input_cost_per_request": 0.04,
-        }
-        _invalidate_model_cost_lowercase_map()
-        logging_obj = LiteLLMLoggingObj(
-            model="unmapped-flat-request-model",
+        router = litellm.Router(
+            model_list=[
+                {
+                    "model_name": "flat-request-streaming-test",
+                    "litellm_params": {
+                        "model": backend_model,
+                        "api_key": "fake-key",
+                        "input_cost_per_request": 0.04,
+                    },
+                }
+            ]
+        )
+        deployment_id = router.model_list[0]["model_info"]["id"]
+        stream = router.completion(
+            model="flat-request-streaming-test",
             messages=[{"role": "user", "content": "Music"}],
             stream=True,
-            call_type="acompletion",
-            start_time=0,
-            litellm_call_id="openrouter-flat-request-streaming",
-            function_id="openrouter-flat-request-streaming",
+            mock_response="audio",
         )
-        logging_obj.update_environment_variables(
-            model="unmapped-flat-request-model",
-            user="",
-            optional_params={},
-            litellm_params={
-                "input_cost_per_request": 0.04,
-                "metadata": {
-                    "model_info": {
-                        "id": deployment_id,
-                        "input_cost_per_request": 0.04,
-                    }
-                },
-            },
-        )
-        logging_obj.model_call_details["custom_llm_provider"] = "openrouter"
         response = ModelResponse(
             id="openrouter-audio",
-            model="unmapped-flat-request-model",
+            model="custom-flat-request-streaming-test",
             choices=[],
             usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
         )
@@ -115,10 +103,12 @@ def test_logging_recalculates_zero_hidden_cost_with_custom_pricing():
             "response_cost": 0.0,
         }
 
-        assert logging_obj._response_cost_calculator(result=response) == 0.04
+        assert stream.logging_obj._response_cost_calculator(result=response) == 0.04
     finally:
-        if original_entry is None:
+        if deployment_id is not None:
             litellm.model_cost.pop(deployment_id, None)
+        if original_shared_entry is None:
+            litellm.model_cost.pop(backend_model, None)
         else:
-            litellm.model_cost[deployment_id] = original_entry
+            litellm.model_cost[backend_model] = original_shared_entry
         _invalidate_model_cost_lowercase_map()
