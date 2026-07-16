@@ -93,7 +93,7 @@ def test_external_spend_model_is_not_treated_as_routing_model() -> None:
 async def test_external_spend_duplicate_only_applies_rollups_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_many = AsyncMock(side_effect=[SimpleNamespace(count=1), SimpleNamespace(count=0)])
+    create_many = AsyncMock(side_effect=[1, 0])
     prisma_client = SimpleNamespace(
         db=SimpleNamespace(litellm_spendlogs=SimpleNamespace(create_many=create_many)),
         jsonify_object=lambda value: value,
@@ -121,4 +121,34 @@ async def test_external_spend_duplicate_only_applies_rollups_once(
     assert first_created is True
     assert duplicate_created is False
     assert create_many.await_count == 2
+    batch_updates.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_external_spend_accepts_batch_payload_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_many = AsyncMock(return_value=SimpleNamespace(count=1))
+    prisma_client = SimpleNamespace(
+        db=SimpleNamespace(litellm_spendlogs=SimpleNamespace(create_many=create_many)),
+        jsonify_object=lambda value: value,
+    )
+    writer = DBSpendUpdateWriter()
+    batch_updates = AsyncMock()
+    monkeypatch.setattr(writer, "_batch_database_updates", batch_updates)
+
+    created = await writer.report_external_spend(
+        payload=cast(SpendLogsPayload, {"request_id": "external:fal:request-1"}),
+        response_cost=0.015,
+        user_id="worker-user",
+        hashed_token="hashed-worker-key",
+        team_id="video-team",
+        org_id="video-org",
+        end_user_id="course-user",
+        prisma_client=prisma_client,
+        user_api_key_cache=DualCache(),
+        litellm_proxy_budget_name=None,
+    )
+
+    assert created is True
     batch_updates.assert_awaited_once()

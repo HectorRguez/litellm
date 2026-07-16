@@ -243,7 +243,8 @@ class DBSpendUpdateWriter:
             data=[db_payload],
             skip_duplicates=True,
         )
-        if result.count == 0:
+        created_count = result if isinstance(result, int) else result.count
+        if created_count == 0:
             return False
 
         await self._batch_database_updates(
