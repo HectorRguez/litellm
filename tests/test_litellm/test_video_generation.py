@@ -368,6 +368,33 @@ class TestVideoGeneration:
         )
         assert cost == 0.5
 
+    def test_video_generation_cost_custom_pricing_from_litellm_metadata(self):
+        from litellm.cost_calculator import completion_cost
+
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock()
+        mock_response.usage.duration_seconds = 10.0
+        type(mock_response)._hidden_params = {}
+
+        mock_logging_obj = MagicMock()
+        mock_logging_obj.litellm_params = {
+            "litellm_metadata": {
+                "model_info": {
+                    "output_cost_per_video_per_second": 0.05,
+                }
+            }
+        }
+
+        cost = completion_cost(
+            completion_response=mock_response,
+            model="openai/hunyuanvideo",
+            call_type="create_video",
+            custom_llm_provider="openai",
+            custom_pricing=True,
+            litellm_logging_obj=mock_logging_obj,
+        )
+        assert cost == 0.5
+
     def test_completion_cost_video_generation_1080p_tier(self):
         """create_video cost uses output_cost_per_second_1080p when usage.video_resolution is 1080p."""
         from litellm.cost_calculator import completion_cost
