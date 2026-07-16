@@ -184,6 +184,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     max_input_tokens: Required[Optional[int]]
     max_output_tokens: Required[Optional[int]]
     input_cost_per_token: Required[Optional[float]]
+    input_cost_per_request: Optional[float]
     input_cost_per_token_flex: Optional[float]  # OpenAI flex service tier pricing
     input_cost_per_token_priority: Optional[float]  # OpenAI priority service tier pricing
     cache_creation_input_token_cost: Optional[float]
@@ -2996,6 +2997,7 @@ class StandardCallbackDynamicParams(TypedDict, total=False):
 class CustomPricingLiteLLMParams(BaseModel):
     ## CUSTOM PRICING ##
     input_cost_per_token: Optional[float] = None
+    input_cost_per_request: Optional[float] = None
     output_cost_per_token: Optional[float] = None
     input_cost_per_second: Optional[float] = None
     output_cost_per_second: Optional[float] = None

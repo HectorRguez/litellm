@@ -61,6 +61,21 @@ def test_get_model_info_surfaces_supports_adaptive_thinking(local_model_cost_map
     assert generalized["supports_adaptive_thinking"] is True
 
 
+def test_get_model_info_surfaces_input_cost_per_request(local_model_cost_map):
+    litellm.model_cost["flat-request-model"] = {
+        "input_cost_per_request": 0.04,
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+    litellm.get_model_info.cache_clear()
+
+    model_info = litellm.get_model_info(model="flat-request-model")
+
+    assert model_info["input_cost_per_request"] == 0.04
+
+
 def test_check_provider_match_azure_ai_allows_openai_and_azure():
     """
     Test that azure_ai provider can match openai and azure models.

@@ -44,6 +44,27 @@ from litellm.litellm_core_utils.llm_cost_calc.utils import (
 from litellm.types.utils import CacheCreationTokenDetails, Usage
 
 
+def test_generic_cost_per_token_includes_input_cost_per_request(monkeypatch):
+    monkeypatch.setattr(
+        "litellm.litellm_core_utils.llm_cost_calc.utils.get_model_info",
+        lambda **kwargs: {
+            "input_cost_per_request": 0.04,
+            "input_cost_per_token": 0.001,
+            "output_cost_per_token": 0.002,
+        },
+    )
+    usage = Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+
+    prompt_cost, completion_cost = generic_cost_per_token(
+        model="flat-request-model",
+        usage=usage,
+        custom_llm_provider="openai",
+    )
+
+    assert prompt_cost == pytest.approx(0.05)
+    assert completion_cost == pytest.approx(0.01)
+
+
 def test_reasoning_tokens_no_price_set():
     # Use o1 - o1-mini was deprecated/renamed; o1 has same reasoning-token semantics
     # (no separate output_cost_per_reasoning_token, so all completion tokens use output_cost_per_token)

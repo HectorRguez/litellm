@@ -5401,6 +5401,7 @@ def _get_model_info_helper(
                 max_input_tokens=_model_info.get("max_input_tokens", None),
                 max_output_tokens=_model_info.get("max_output_tokens", None),
                 input_cost_per_token=_input_cost_per_token,
+                input_cost_per_request=_model_info.get("input_cost_per_request", None),
                 input_cost_per_token_flex=_model_info.get("input_cost_per_token_flex", None),
                 input_cost_per_token_priority=_model_info.get("input_cost_per_token_priority", None),
                 cache_creation_input_token_cost=_model_info.get("cache_creation_input_token_cost", None),

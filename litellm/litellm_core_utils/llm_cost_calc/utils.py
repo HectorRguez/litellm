@@ -573,7 +573,8 @@ def _calculate_input_cost(
     """
     Calculates the input cost for a given model, prompt tokens, and completion tokens.
     """
-    prompt_cost = float(prompt_tokens_details["text_tokens"]) * prompt_base_cost
+    prompt_cost = float(_get_cost_per_unit(model_info, "input_cost_per_request"))
+    prompt_cost += float(prompt_tokens_details["text_tokens"]) * prompt_base_cost
 
     ### CACHE READ COST - Now uses tiered pricing
     prompt_cost += float(prompt_tokens_details["cache_hit_tokens"]) * cache_read_cost
