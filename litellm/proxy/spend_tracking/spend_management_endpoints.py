@@ -16,6 +16,7 @@ from typing import (
 )
 
 import fastapi
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 import litellm
@@ -27,6 +28,9 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 # NOTE: Avoid module-level import from common_utils: proxy_server imports this
 # module while common_utils may pull proxy_server during init, which can leave
 # those names undefined. Import the helpers locally where they are used.
+from litellm.proxy.spend_tracking.external_spend_cost_calculator import (
+    external_spend_cost_calculator,
+)
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
     get_spend_by_team,
     get_spend_by_team_and_customer,
@@ -73,6 +77,19 @@ async def report_external_spend(
             detail="Database not connected",
         )
 
+    try:
+        resolved_cost = await external_spend_cost_calculator.resolve(data)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="External provider pricing lookup failed",
+        ) from exc
+
     external_request_id = f"external:{data.provider}:{data.request_id}"
     now = datetime.now(timezone.utc)
     metadata = {
@@ -83,14 +100,14 @@ async def report_external_spend(
         "user_api_key_user_id": user_api_key_dict.user_id,
         "user_api_key_end_user_id": data.end_user,
         "tags": data.tags,
-        "spend_logs_metadata": data.metadata,
+        "spend_logs_metadata": {**data.metadata, **resolved_cost.metadata},
     }
     kwargs = {
         "model": data.external_model,
         "custom_llm_provider": data.provider,
         "call_type": "external_spend",
         "litellm_call_id": external_request_id,
-        "response_cost": data.spend,
+        "response_cost": resolved_cost.spend,
         "litellm_params": {
             "metadata": metadata,
             "user_api_key_end_user_id": data.end_user,
@@ -103,10 +120,10 @@ async def report_external_spend(
         end_time=now,
     )
     payload["request_id"] = external_request_id
-    payload["spend"] = data.spend
+    payload["spend"] = resolved_cost.spend
     created = await proxy_logging_obj.db_spend_update_writer.report_external_spend(
         payload=payload,
-        response_cost=data.spend,
+        response_cost=resolved_cost.spend,
         user_id=user_api_key_dict.user_id,
         hashed_token=user_api_key_dict.api_key,
         team_id=user_api_key_dict.team_id,
@@ -118,7 +135,7 @@ async def report_external_spend(
     )
     return ExternalSpendReportResponse(
         request_id=external_request_id,
-        spend=data.spend,
+        spend=resolved_cost.spend,
         created=created,
     )
 

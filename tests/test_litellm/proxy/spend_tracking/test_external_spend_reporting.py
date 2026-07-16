@@ -1,30 +1,49 @@
+import json
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from litellm.caching import DualCache
 from litellm.proxy._types import (
     ExternalSpendReportRequest,
+    ExternalSpendUsage,
     SpendLogsPayload,
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.auth_utils import get_model_from_request
 from litellm.proxy.db.db_spend_update_writer import DBSpendUpdateWriter
+from litellm.proxy.spend_tracking.external_spend_cost_calculator import (
+    ExternalSpendCost,
+    ExternalSpendCostCalculator,
+)
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     report_external_spend,
 )
 
 
-def test_external_spend_report_rejects_negative_spend() -> None:
+def test_external_spend_report_rejects_negative_usage() -> None:
     with pytest.raises(ValidationError):
         ExternalSpendReportRequest(
             provider="fal",
             external_model="fal-ai/gemini-3.1-flash-tts",
-            spend=-0.01,
+            usage=ExternalSpendUsage(unit="billable_units", quantity=-0.01),
             request_id="request-1",
+        )
+
+
+def test_external_spend_report_accepts_only_fal_billable_units() -> None:
+    with pytest.raises(ValidationError):
+        ExternalSpendReportRequest.model_validate(
+            {
+                "provider": "heygen",
+                "external_model": "heygen/avatar_v",
+                "usage": {"unit": "seconds", "quantity": 30},
+                "request_id": "heygen-video-1",
+            }
         )
 
 
@@ -33,13 +52,30 @@ async def test_external_spend_report_uses_authenticated_attribution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from litellm.proxy import proxy_server
+    from litellm.proxy.spend_tracking import spend_management_endpoints
 
     report_spend = AsyncMock(return_value=True)
+    resolve_cost = AsyncMock(
+        return_value=ExternalSpendCost(
+            spend=0.015,
+            metadata={
+                "billing_source": "https://api.fal.ai/v1/models/pricing",
+                "billing_unit": "1000 characters",
+                "billing_quantity": 0.1,
+                "unit_price_usd": 0.15,
+            },
+        )
+    )
     monkeypatch.setattr(proxy_server, "prisma_client", SimpleNamespace())
     monkeypatch.setattr(
         proxy_server.proxy_logging_obj.db_spend_update_writer,
         "report_external_spend",
         report_spend,
+    )
+    monkeypatch.setattr(
+        spend_management_endpoints.external_spend_cost_calculator,
+        "resolve",
+        resolve_cost,
     )
     auth = UserAPIKeyAuth(
         api_key="hashed-worker-key",
@@ -51,7 +87,7 @@ async def test_external_spend_report_uses_authenticated_attribution(
     request = ExternalSpendReportRequest(
         provider="fal",
         external_model="fal-ai/gemini-3.1-flash-tts",
-        spend=0.015,
+        usage=ExternalSpendUsage(unit="billable_units", quantity=0.1),
         request_id="fal-request-1",
         end_user="course-user",
         tags=["course:course-1", "video:video-1"],
@@ -75,18 +111,69 @@ async def test_external_spend_report_uses_authenticated_attribution(
     assert payload["organization_id"] == "video-org"
     assert payload["end_user"] == "course-user"
     assert payload["request_tags"] == '["course:course-1", "video:video-1"]'
+    assert json.loads(payload["metadata"])["spend_logs_metadata"]["billing_quantity"] == 0.1
+    resolve_cost.assert_awaited_once_with(request)
 
 
 def test_external_spend_model_is_not_treated_as_routing_model() -> None:
     request_data = ExternalSpendReportRequest(
         provider="fal",
         external_model="fal-ai/gemini-3.1-flash-tts",
-        spend=0.015,
+        usage=ExternalSpendUsage(unit="billable_units", quantity=0.1),
         request_id="fal-request-1",
     ).model_dump()
 
     assert request_data["external_model"] == "fal-ai/gemini-3.1-flash-tts"
     assert get_model_from_request(request_data, "/spend/report") is None
+
+
+@pytest.mark.asyncio
+async def test_external_spend_calculator_resolves_fal_pricing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAL_AI_API_KEY", "fal-key")
+    pricing_fetcher = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "prices": [
+                    {
+                        "endpoint_id": "fal-ai/gemini-3.1-flash-tts",
+                        "unit_price": 0.15,
+                        "unit": "1000 characters",
+                        "currency": "USD",
+                    }
+                ]
+            },
+            request=httpx.Request(
+                "GET",
+                "https://api.fal.ai/v1/models/pricing",
+            ),
+        )
+    )
+    cache = DualCache()
+    calculator = ExternalSpendCostCalculator(
+        fal_pricing_fetcher=pricing_fetcher,
+        pricing_cache=cache,
+    )
+    request = ExternalSpendReportRequest(
+        provider="fal",
+        external_model="fal-ai/gemini-3.1-flash-tts",
+        usage=ExternalSpendUsage(unit="billable_units", quantity=0.137),
+        request_id="fal-request-1",
+    )
+
+    first = await calculator.resolve(request)
+    second = await calculator.resolve(request)
+
+    assert first == second
+    assert first.spend == pytest.approx(0.02055)
+    assert first.metadata["billing_quantity"] == 0.137
+    assert first.metadata["unit_price_usd"] == 0.15
+    pricing_fetcher.assert_awaited_once_with(
+        "fal-ai/gemini-3.1-flash-tts",
+        "Key fal-key",
+    )
 
 
 @pytest.mark.asyncio

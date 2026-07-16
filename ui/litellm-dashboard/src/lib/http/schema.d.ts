@@ -23699,14 +23699,16 @@ export interface components {
             metadata?: {
                 [key: string]: string | number | boolean | null;
             };
-            /** Provider */
-            provider: string;
+            /**
+             * Provider
+             * @constant
+             */
+            provider: "fal";
             /** Request Id */
             request_id: string;
-            /** Spend */
-            spend: number;
             /** Tags */
             tags?: string[];
+            usage: components["schemas"]["ExternalSpendUsage"];
         };
         /** ExternalSpendReportResponse */
         ExternalSpendReportResponse: {
@@ -23716,6 +23718,16 @@ export interface components {
             request_id: string;
             /** Spend */
             spend: number;
+        };
+        /** ExternalSpendUsage */
+        ExternalSpendUsage: {
+            /** Quantity */
+            quantity: number;
+            /**
+             * Unit
+             * @constant
+             */
+            unit: "billable_units";
         };
         /**
          * FailedKeyUpdate
