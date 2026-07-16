@@ -1000,6 +1000,76 @@ def test_per_request_custom_pricing_with_router():
     assert "gpt-3.5-turbo" in selected
 
 
+def test_flat_request_deployment_pricing_recalculates_zero_provider_cost():
+    from litellm.litellm_core_utils.litellm_logging import (
+        Logging as LiteLLMLoggingObj,
+    )
+    from litellm.utils import _invalidate_model_cost_lowercase_map
+
+    deployment_id = "flat-request-deployment-pricing-test"
+    original_entry = litellm.model_cost.get(deployment_id)
+
+    try:
+        litellm.model_cost[deployment_id] = {
+            "litellm_provider": "openrouter",
+            "mode": "chat",
+            "input_cost_per_request": 0.04,
+        }
+        _invalidate_model_cost_lowercase_map()
+        response = ModelResponse(
+            id="flat-request-response",
+            model="unmapped-flat-request-model",
+            choices=[],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+        response._hidden_params = {
+            "model_id": deployment_id,
+            "response_cost": 0.0,
+        }
+
+        direct_cost = response_cost_calculator(
+            response_object=response,
+            model="unmapped-flat-request-model",
+            custom_llm_provider="openrouter",
+            call_type="completion",
+            optional_params={},
+            custom_pricing=True,
+            router_model_id=deployment_id,
+        )
+
+        logging_obj = LiteLLMLoggingObj(
+            model="unmapped-flat-request-model",
+            messages=[{"role": "user", "content": "Music"}],
+            stream=True,
+            call_type="completion",
+            start_time=0,
+            litellm_call_id="flat-request-stream",
+            function_id="flat-request-stream",
+        )
+        logging_obj.update_environment_variables(
+            model="unmapped-flat-request-model",
+            user="",
+            optional_params={},
+            litellm_params={
+                "metadata": {
+                    "model_info": {
+                        "id": deployment_id,
+                    }
+                },
+            },
+        )
+        logging_obj.model_call_details["custom_llm_provider"] = "openrouter"
+
+        assert direct_cost == 0.04
+        assert logging_obj._response_cost_calculator(result=response) == 0.04
+    finally:
+        if original_entry is None:
+            litellm.model_cost.pop(deployment_id, None)
+        else:
+            litellm.model_cost[deployment_id] = original_entry
+        _invalidate_model_cost_lowercase_map()
+
+
 def test_tiered_pricing_only_deployment_selects_router_model_id():
     """A deployment priced solely via ``tiered_pricing`` (no flat
     input/output cost) must resolve cost against its ``router_model_id``

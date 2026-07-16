@@ -1390,13 +1390,11 @@ class Logging(LiteLLMLoggingBaseClass):
         if transformed_result is not None:
             result = transformed_result
 
+        hidden_response_cost = None
         if isinstance(result, BaseModel) and hasattr(result, "_hidden_params"):
             hidden_params = getattr(result, "_hidden_params", {})
-            if (
-                "response_cost" in hidden_params and hidden_params["response_cost"] is not None
-            ):  # use cost if already calculated
-                return hidden_params["response_cost"]
-            elif router_model_id is None and "model_id" in hidden_params:  # use model_id if not already set
+            hidden_response_cost = hidden_params.get("response_cost")
+            if router_model_id is None and "model_id" in hidden_params:
                 router_model_id = hidden_params["model_id"]
 
         # Fallback: extract router_model_id from litellm_params when not available
@@ -1409,6 +1407,10 @@ class Logging(LiteLLMLoggingBaseClass):
         custom_pricing = use_custom_pricing_for_model(
             litellm_params=(self.litellm_params if hasattr(self, "litellm_params") else None)
         )
+        if not custom_pricing and router_model_id is not None:
+            custom_pricing = use_custom_pricing_for_model(litellm_params=litellm.model_cost.get(router_model_id))
+        if hidden_response_cost is not None and (hidden_response_cost != 0 or not custom_pricing):
+            return hidden_response_cost
 
         prompt = ""  # use for tts cost calc
         _input = self.model_call_details.get("input", None)
