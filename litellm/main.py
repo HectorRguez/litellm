@@ -7910,6 +7910,54 @@ def speech(
             aspeech=aspeech,
             shared_session=shared_session,
         )
+    elif custom_llm_provider == "openrouter":
+        openrouter_voice = voice.strip() if isinstance(voice, str) else None
+        if not openrouter_voice:
+            raise litellm.BadRequestError(
+                message="'voice' is required to be passed as a string for OpenRouter TTS",
+                model=model,
+                llm_provider=custom_llm_provider,
+            )
+
+        openrouter_api_base = (
+            api_base or litellm.api_base or get_secret_str("OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1"
+        )
+        openrouter_api_key = (
+            api_key
+            or litellm.api_key
+            or litellm.openrouter_key
+            or get_secret_str("OPENROUTER_API_KEY")
+            or get_secret_str("OR_API_KEY")
+        )
+        openrouter_headers = {
+            "HTTP-Referer": get_secret_str("OR_SITE_URL") or "https://litellm.ai",
+            "X-Title": get_secret_str("OR_APP_NAME") or "liteLLM",
+            **(litellm.headers or {}),
+            **(headers or {}),
+            **(extra_headers or {}),
+        }
+        openrouter_extra_body = kwargs.get("extra_body")
+        openrouter_optional_params = {
+            **{key: value for key, value in optional_params.items() if key != "instructions"},
+            **({"extra_body": openrouter_extra_body} if openrouter_extra_body is not None else {}),
+            "extra_headers": openrouter_headers,
+        }
+
+        response = openai_chat_completions.audio_speech(
+            model=model,
+            input=input,
+            voice=openrouter_voice,
+            optional_params=openrouter_optional_params,
+            api_key=openrouter_api_key,
+            api_base=openrouter_api_base,
+            organization=organization,
+            project=project,
+            max_retries=max_retries,
+            timeout=timeout,
+            client=client,
+            aspeech=aspeech,
+            shared_session=shared_session,
+        )
     elif custom_llm_provider == "azure":
         # Check if this is Azure Speech Service (Cognitive Services TTS)
         if model.startswith("speech/"):
