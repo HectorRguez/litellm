@@ -1692,6 +1692,21 @@ class Logging(LiteLLMLoggingBaseClass):
                     logging_obj=self,
                     endpoint=self.model_call_details.get("endpoint", ""),
                 )
+        elif self.call_type in (
+            CallTypes.video_content.value,
+            CallTypes.avideo_content.value,
+        ) and isinstance(result, bytes):
+            response_cost = self.model_call_details.get("response_cost")
+            if isinstance(response_cost, (int, float)):
+                tracking_id = self.model_call_details.get("provider_cost_tracking_id")
+                tracking_model = self.model_call_details.get("provider_cost_tracking_model")
+                logging_result = VideoObject(
+                    id=(tracking_id if isinstance(tracking_id, str) else self.litellm_call_id),
+                    object="video",
+                    status="completed",
+                    model=(tracking_model if isinstance(tracking_model, str) else None),
+                )
+                logging_result._hidden_params = {"response_cost": float(response_cost)}
         return logging_result
 
     def _merge_hidden_params_from_response_into_metadata(self, logging_result: Any) -> None:

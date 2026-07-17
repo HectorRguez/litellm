@@ -1,8 +1,9 @@
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 
+from litellm.caching.llm_caching_handler import LLMClientCache
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
 from litellm.types.router import GenericLiteLLMParams
@@ -14,14 +15,75 @@ from litellm.types.videos.utils import (
 from litellm.utils import ProviderConfigManager
 
 
-def _json_response(data: object, status_code: int = 200) -> httpx.Response:
+def _json_response(
+    data: object,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+    request_headers: dict[str, str] | None = None,
+) -> httpx.Response:
     return httpx.Response(
         status_code=status_code,
         json=data,
+        headers=headers,
         request=httpx.Request(
             "GET",
             "https://queue.fal.run/fal-ai/wan/v2.7/text-to-video/requests/request-123",
+            headers=request_headers,
         ),
+    )
+
+
+_FAL_MODEL = "fal-ai/wan/v2.7/text-to-video"
+_VIDEO_URL = "https://v3.fal.media/files/video.mp4"
+
+
+def _content_result_response(
+    authorization: str = "Key account-a",
+    billable_units: str = "5",
+) -> httpx.Response:
+    return _json_response(
+        {"video": {"url": _VIDEO_URL}},
+        headers={"x-fal-billable-units": billable_units},
+        request_headers={"Authorization": authorization},
+    )
+
+
+def _pricing_response(
+    unit_price: float,
+    endpoint_id: str = _FAL_MODEL,
+) -> httpx.Response:
+    return _json_response(
+        {
+            "prices": [
+                {
+                    "endpoint_id": endpoint_id,
+                    "unit_price": unit_price,
+                    "unit": "video_second",
+                    "currency": "USD",
+                }
+            ]
+        }
+    )
+
+
+def _content_logging_obj() -> Mock:
+    logging_obj = Mock()
+    logging_obj.optional_params = {
+        "video_id": encode_video_id_with_provider(
+            "request-123",
+            "fal_ai",
+            _FAL_MODEL,
+        )
+    }
+    logging_obj.model_call_details = {}
+    return logging_obj
+
+
+def _media_response(content: bytes = b"video-bytes") -> httpx.Response:
+    return httpx.Response(
+        200,
+        content=content,
+        request=httpx.Request("GET", _VIDEO_URL),
     )
 
 
@@ -236,6 +298,69 @@ def test_content_response_downloads_video() -> None:
     assert content == b"video-bytes"
 
 
+def test_content_response_tracks_provider_cost_and_caches_account_price() -> None:
+    pricing_fetcher = Mock(return_value=_pricing_response(0.15))
+    config = FalAIVideoConfig(
+        sync_media_fetcher=Mock(return_value=_media_response()),
+        sync_pricing_fetcher=pricing_fetcher,
+        pricing_cache=LLMClientCache(),
+    )
+    logging_obj = _content_logging_obj()
+    raw_response = _content_result_response()
+
+    first_content = config.transform_video_content_response(raw_response, logging_obj)
+    second_content = config.transform_video_content_response(raw_response, logging_obj)
+
+    assert first_content == second_content == b"video-bytes"
+    assert logging_obj.model_call_details["response_cost"] == pytest.approx(0.75)
+    assert logging_obj.model_call_details["provider_cost_tracking_id"] == "fal-video-cost:request-123"
+    assert logging_obj.model_call_details["provider_cost_tracking_model"] == _FAL_MODEL
+    pricing_fetcher.assert_called_once_with(_FAL_MODEL, "Key account-a")
+
+
+def test_content_response_scopes_cached_price_by_authorization() -> None:
+    def pricing_fetcher(endpoint_id: str, authorization: str) -> httpx.Response:
+        unit_price = 0.1 if authorization == "Key account-a" else 0.2
+        return _pricing_response(unit_price, endpoint_id)
+
+    config = FalAIVideoConfig(
+        sync_media_fetcher=Mock(return_value=_media_response()),
+        sync_pricing_fetcher=pricing_fetcher,
+        pricing_cache=LLMClientCache(),
+    )
+    logging_obj = _content_logging_obj()
+
+    config.transform_video_content_response(
+        _content_result_response(authorization="Key account-a"),
+        logging_obj,
+    )
+    assert logging_obj.model_call_details["response_cost"] == pytest.approx(0.5)
+
+    config.transform_video_content_response(
+        _content_result_response(authorization="Key account-b"),
+        logging_obj,
+    )
+    assert logging_obj.model_call_details["response_cost"] == pytest.approx(1.0)
+
+
+def test_content_response_succeeds_when_pricing_is_unavailable() -> None:
+    pricing_fetcher = Mock(side_effect=httpx.ConnectError("pricing unavailable"))
+    config = FalAIVideoConfig(
+        sync_media_fetcher=Mock(return_value=_media_response()),
+        sync_pricing_fetcher=pricing_fetcher,
+        pricing_cache=LLMClientCache(),
+    )
+    logging_obj = _content_logging_obj()
+
+    content = config.transform_video_content_response(
+        _content_result_response(),
+        logging_obj,
+    )
+
+    assert content == b"video-bytes"
+    assert "response_cost" not in logging_obj.model_call_details
+
+
 @pytest.mark.asyncio
 async def test_async_content_response_downloads_video() -> None:
     async def media_fetcher(url: str) -> httpx.Response:
@@ -253,6 +378,26 @@ async def test_async_content_response_downloads_video() -> None:
     )
 
     assert content == b"async-video-bytes"
+
+
+@pytest.mark.asyncio
+async def test_async_content_response_tracks_provider_cost() -> None:
+    async_pricing_fetcher = AsyncMock(return_value=_pricing_response(0.15))
+    config = FalAIVideoConfig(
+        async_media_fetcher=AsyncMock(return_value=_media_response(b"async-video-bytes")),
+        async_pricing_fetcher=async_pricing_fetcher,
+        pricing_cache=LLMClientCache(),
+    )
+    logging_obj = _content_logging_obj()
+
+    content = await config.async_transform_video_content_response(
+        _content_result_response(),
+        logging_obj,
+    )
+
+    assert content == b"async-video-bytes"
+    assert logging_obj.model_call_details["response_cost"] == pytest.approx(0.75)
+    async_pricing_fetcher.assert_awaited_once_with(_FAL_MODEL, "Key account-a")
 
 
 def test_provider_errors_preserve_status(config: FalAIVideoConfig) -> None:
