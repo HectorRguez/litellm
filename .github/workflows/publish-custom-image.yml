@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - codex/litellm-generic-video-cost-tracking
-      - litellm_publish_custom_image
   workflow_dispatch:
 
 concurrency:
