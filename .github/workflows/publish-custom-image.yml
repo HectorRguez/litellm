@@ -47,3 +47,10 @@ jobs:
             org.opencontainers.image.licenses=MIT
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify anonymous pull
+        env:
+          IMAGE: ghcr.io/hectorrguez/litellm:${{ github.sha }}
+        run: |
+          mkdir "$RUNNER_TEMP/anonymous-docker"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker" docker manifest inspect "$IMAGE" >/dev/null
