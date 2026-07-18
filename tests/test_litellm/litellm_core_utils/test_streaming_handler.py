@@ -1507,6 +1507,57 @@ async def test_openrouter_streaming_cost_after_finish_reason(logging_obj: Loggin
     assert usage_chunks[-1].usage.cost == 0.00025
 
 
+@pytest.mark.asyncio
+async def test_openrouter_usage_only_audio_chunk_preserves_cost(logging_obj: Logging):
+    from litellm.utils import ModelResponseListIterator
+
+    model = "google/lyria-3-clip-preview"
+    chunk1 = ModelResponseStream(
+        id="gen-lyria",
+        created=1742056047,
+        model=model,
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content="audio data", role="assistant"),
+            )
+        ],
+        usage=None,
+    )
+    chunk2 = ModelResponseStream(
+        id="gen-lyria",
+        created=1742056048,
+        model=model,
+        choices=[StreamingChoices(finish_reason="stop", index=0, delta=Delta(content=""))],
+        usage=None,
+    )
+    chunk3 = ModelResponseStream(
+        id="gen-lyria",
+        created=1742056049,
+        model=model,
+        choices=[],
+        usage=Usage(
+            completion_tokens=0,
+            prompt_tokens=0,
+            total_tokens=0,
+            cost=0.04,
+        ),
+    )
+    response = CustomStreamWrapper(
+        completion_stream=ModelResponseListIterator(model_responses=[chunk1, chunk2, chunk3]),
+        model=model,
+        custom_llm_provider="openrouter",
+        logging_obj=logging_obj,
+        stream_options={"include_usage": True},
+    )
+
+    collected_chunks = [chunk async for chunk in response]
+    usage_chunks = [chunk for chunk in collected_chunks if hasattr(chunk, "usage") and chunk.usage]
+
+    assert usage_chunks[-1].usage.cost == 0.04
+
+
 def test_openrouter_streaming_cost_propagates_to_hidden_params():
     """
     Verify that provider-reported cost from usage.cost flows into

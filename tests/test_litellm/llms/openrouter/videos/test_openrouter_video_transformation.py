@@ -200,7 +200,7 @@ def test_maps_status_responses(
                 "usage": {"cost": 0.25, "is_byok": False} if openrouter_status == "completed" else None,
             }
         ),
-        logging_obj=Mock(),
+        logging_obj=Mock(model_call_details={}),
         custom_llm_provider="openrouter",
     )
 
@@ -210,6 +210,37 @@ def test_maps_status_responses(
         assert video.usage == {"cost": 0.25, "is_byok": False}
     if litellm_status == "failed":
         assert video.error == {"message": "generation failed"}
+
+
+def test_completed_status_records_provider_cost(config: OpenRouterVideoConfig) -> None:
+    logging_obj = Mock(
+        model_call_details={"model": "openrouter/bytedance/seedance-2.0"}
+    )
+
+    video = config.transform_video_status_retrieve_response(
+        raw_response=_json_response(
+            {
+                "id": "job-123",
+                "status": "completed",
+                "generation_id": "generation-123",
+                "model": None,
+                "usage": {"cost": 0.6048, "is_byok": False},
+            }
+        ),
+        logging_obj=logging_obj,
+        custom_llm_provider="openrouter",
+    )
+
+    assert video.usage == {"cost": 0.6048, "is_byok": False}
+    assert logging_obj.model_call_details["response_cost"] == 0.6048
+    assert (
+        logging_obj.model_call_details["provider_cost_tracking_id"]
+        == "openrouter-video-cost:generation-123"
+    )
+    assert (
+        logging_obj.model_call_details["provider_cost_tracking_model"]
+        == "openrouter/bytedance/seedance-2.0"
+    )
 
 
 def test_status_and_content_requests_decode_and_escape_video_id(config: OpenRouterVideoConfig) -> None:

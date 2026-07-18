@@ -3382,6 +3382,47 @@ def test_video_content_normalization_creates_idempotent_cost_record() -> None:
     assert "video-bytes" not in repr(payload)
 
 
+def test_video_status_normalization_creates_idempotent_cost_record() -> None:
+    logging_obj = LitellmLogging(
+        model="",
+        messages=None,
+        stream=False,
+        call_type="avideo_status",
+        litellm_call_id="status-call-id",
+        start_time=time.time(),
+        function_id="test-fn",
+    )
+    logging_obj.model_call_details["response_cost"] = 0.6048
+    logging_obj.model_call_details["provider_cost_tracking_id"] = "openrouter-video-cost:generation-123"
+    logging_obj.model_call_details["provider_cost_tracking_model"] = "openrouter"
+    video = VideoObject(
+        id="video-job-123",
+        object="video",
+        status="completed",
+        usage={"cost": 0.6048, "is_byok": False},
+    )
+
+    normalized = logging_obj.normalize_logging_result(video)
+
+    assert normalized.id == "openrouter-video-cost:generation-123"
+    assert normalized.model == "openrouter"
+    assert normalized._hidden_params == {"response_cost": 0.6048}
+    assert video.id == "video-job-123"
+
+    with patch(
+        "litellm.litellm_core_utils.litellm_logging.emit_standard_logging_payload"
+    ):
+        logging_obj._success_handler_helper_fn(
+            result=video,
+            start_time=time.time(),
+            end_time=time.time(),
+        )
+
+    payload = logging_obj.model_call_details["standard_logging_object"]
+    assert payload["id"] == "openrouter-video-cost:generation-123"
+    assert payload["response_cost"] == 0.6048
+
+
 def test_success_handler_unified_helper_runs_for_typed_results():
     """Recognized typed responses still flow through the unified helper."""
     logging_obj = _make_dict_logging_obj()

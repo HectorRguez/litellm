@@ -27,7 +27,7 @@ from typing import (
 
 import litellm
 from litellm._logging import verbose_proxy_logger
-from litellm.caching import RedisCache
+from litellm.caching import DualCache, RedisCache
 from litellm.constants import (
     DB_SPEND_UPDATE_JOB_NAME,
     DB_DAILY_TAG_SPEND_UPDATE_JOB_NAME,

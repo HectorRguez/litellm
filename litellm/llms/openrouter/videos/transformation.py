@@ -299,6 +299,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
         response = self._parse_video_response(raw_response)
+        self._record_provider_cost(response=response, logging_obj=logging_obj)
         return self._to_video_object(
             response=response,
             custom_llm_provider=custom_llm_provider,
@@ -382,6 +383,21 @@ class OpenRouterVideoConfig(BaseVideoConfig):
             **({"duration_seconds": self._numeric_value(duration)} if duration is not None else {}),
             **({"video_resolution": str(size)} if size is not None else {}),
         }
+
+    def _record_provider_cost(
+        self,
+        response: _OpenRouterVideoResponse,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        if response.usage is None or response.usage.cost is None:
+            return
+        logging_obj.model_call_details["response_cost"] = response.usage.cost
+        logging_obj.model_call_details["provider_cost_tracking_id"] = (
+            f"openrouter-video-cost:{response.generation_id or response.id}"
+        )
+        logging_obj.model_call_details["provider_cost_tracking_model"] = (
+            response.model or logging_obj.model_call_details.get("model") or "openrouter"
+        )
 
     def _video_error(self, error: Union[str, _OpenRouterVideoError] | None) -> dict[str, object] | None:
         if error is None:
