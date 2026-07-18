@@ -241,6 +241,11 @@ def test_completed_status_records_provider_cost(config: OpenRouterVideoConfig) -
         logging_obj.model_call_details["provider_cost_tracking_model"]
         == "openrouter/bytedance/seedance-2.0"
     )
+    assert video._hidden_params == {
+        "response_cost": 0.6048,
+        "provider_cost_tracking_id": "openrouter-video-cost:generation-123",
+        "provider_cost_tracking_model": "openrouter/bytedance/seedance-2.0",
+    }
 
 
 def test_status_and_content_requests_decode_and_escape_video_id(config: OpenRouterVideoConfig) -> None:

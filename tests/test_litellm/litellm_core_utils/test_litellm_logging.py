@@ -3392,15 +3392,17 @@ def test_video_status_normalization_creates_idempotent_cost_record() -> None:
         start_time=time.time(),
         function_id="test-fn",
     )
-    logging_obj.model_call_details["response_cost"] = 0.6048
-    logging_obj.model_call_details["provider_cost_tracking_id"] = "openrouter-video-cost:generation-123"
-    logging_obj.model_call_details["provider_cost_tracking_model"] = "openrouter"
     video = VideoObject(
         id="video-job-123",
         object="video",
         status="completed",
         usage={"cost": 0.6048, "is_byok": False},
     )
+    video._hidden_params = {
+        "response_cost": 0.6048,
+        "provider_cost_tracking_id": "openrouter-video-cost:generation-123",
+        "provider_cost_tracking_model": "openrouter",
+    }
 
     normalized = logging_obj.normalize_logging_result(video)
 

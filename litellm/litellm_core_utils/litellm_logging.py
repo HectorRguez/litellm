@@ -1717,9 +1717,19 @@ class Logging(LiteLLMLoggingBaseClass):
                 )
                 logging_result._hidden_params = {"response_cost": float(response_cost)}
         elif isinstance(result, VideoObject):
-            response_cost = self.model_call_details.get("response_cost")
-            tracking_id = self.model_call_details.get("provider_cost_tracking_id")
-            tracking_model = self.model_call_details.get("provider_cost_tracking_model")
+            hidden_params = getattr(result, "_hidden_params", {})
+            response_cost = hidden_params.get(
+                "response_cost",
+                self.model_call_details.get("response_cost"),
+            )
+            tracking_id = hidden_params.get(
+                "provider_cost_tracking_id",
+                self.model_call_details.get("provider_cost_tracking_id"),
+            )
+            tracking_model = hidden_params.get(
+                "provider_cost_tracking_model",
+                self.model_call_details.get("provider_cost_tracking_model"),
+            )
             if isinstance(response_cost, (int, float)) and isinstance(tracking_id, str):
                 logging_result = result.model_copy(
                     update={
