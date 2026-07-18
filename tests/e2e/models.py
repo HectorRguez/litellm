@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, RootModel
+from pydantic import BaseModel, ConfigDict, RootModel, model_validator
 
 # ---------- keys ----------
 
@@ -39,6 +39,10 @@ class KeyMetadata(BaseModel):
     logging: list[KeyLoggingCallback] | None = None
 
 
+class ObjectPermission(BaseModel):
+    mcp_servers: list[str] | None = None
+
+
 class KeyGenerateBody(BaseModel):
     models: list[str] = []
     duration: str | None = None
@@ -57,6 +61,7 @@ class KeyGenerateBody(BaseModel):
     rpm_limit: int | None = None
     allowed_routes: list[str] | None = None
     metadata: KeyMetadata | None = None
+    object_permission: ObjectPermission | None = None
 
 
 class KeyGenerateResponse(BaseModel):
@@ -82,6 +87,7 @@ class KeyInfo(BaseModel):
     key_alias: str | None = None
     models: list[str] = []
     tpm_limit: int | None = None
+    rpm_limit: int | None = None
     team_id: str | None = None
     spend: float | None = None
     max_budget: float | None = None
@@ -153,6 +159,7 @@ class AnthropicMessagesBody(BaseModel):
     model: str
     messages: list[ChatMessage]
     max_tokens: int
+    stream: bool | None = None
 
 
 class AnthropicMessagesResponse(BaseModel):
@@ -254,6 +261,16 @@ class SpendLogs(RootModel[list[SpendLogRow]]):
 class SpendLogsParams(BaseModel):
     request_id: str | None = None
     api_key: str | None = None
+
+    @model_validator(mode="after")
+    def require_filter(self) -> SpendLogsParams:
+        if self.request_id is None and self.api_key is None:
+            raise ValueError(
+                "unfiltered /spend/logs returns the entire spend table and OOMs the "
+                "runner on long-lived environments; filter by request_id or api_key, "
+                "or use Gateway.spend_logs_window for a bounded /spend/logs/v2 read"
+            )
+        return self
 
 
 class SpendLogsPageParams(BaseModel):
@@ -428,6 +445,9 @@ class LiteLLMParamsBody(BaseModel):
     aws_batch_role_arn: str | None = None
     input_cost_per_token: float | None = None
     output_cost_per_token: float | None = None
+    extra_headers: dict[str, str] | None = None
+    use_in_pass_through: bool | None = None
+    complexity_router_config: dict[str, object] | None = None
 
 
 ModelMode = Literal["batch", "realtime", "image_generation"]
