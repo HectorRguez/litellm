@@ -68,6 +68,16 @@ else:
     ProxyLogging = Any
 
 
+_PROVIDER_COST_TRACKING_PREFIXES = (
+    "fal-video-cost:",
+    "openrouter-video-cost:",
+)
+
+
+def _is_provider_cost_tracking_request_id(request_id: Any) -> bool:
+    return isinstance(request_id, str) and request_id.startswith(_PROVIDER_COST_TRACKING_PREFIXES)
+
+
 def _extract_cache_read_tokens(usage_obj: dict) -> int:
     """
     Anthropic: top-level cache_read_input_tokens field.
@@ -136,6 +146,7 @@ class DBSpendUpdateWriter:
             disable_spend_logs,
             litellm_proxy_budget_name,
             prisma_client,
+            user_api_key_cache,
         )
         from litellm.proxy.utils import ProxyUpdateSpend, hash_token
 
@@ -173,6 +184,32 @@ class DBSpendUpdateWriter:
             if team_id is not None and team_id != "":
                 payload["team_id"] = team_id
 
+            if (
+                disable_spend_logs is False
+                and prisma_client is not None
+                and _is_provider_cost_tracking_request_id(payload.get("request_id"))
+            ):
+                created = await self.report_external_spend(
+                    payload=payload,
+                    response_cost=float(response_cost or 0.0),
+                    user_id=user_id,
+                    hashed_token=hashed_token,
+                    team_id=team_id,
+                    org_id=org_id,
+                    end_user_id=end_user_id,
+                    prisma_client=prisma_client,
+                    user_api_key_cache=user_api_key_cache,
+                    litellm_proxy_budget_name=litellm_proxy_budget_name,
+                )
+                if created:
+                    self._enqueue_tool_registry_upsert(
+                        kwargs=kwargs,
+                        completion_response=completion_response,
+                        hashed_token=hashed_token,
+                        team_id=team_id,
+                    )
+                return created
+
             if disable_spend_logs is False:
                 await self._insert_spend_log_to_db(
                     payload=payload,
@@ -206,6 +243,7 @@ class DBSpendUpdateWriter:
             )
 
             verbose_proxy_logger.debug("Runs spend update on all tables")
+            return True
         except Exception:
             spend_log_error(
                 "Spend tracking - update_database failed. Spend log insertion or daily transaction enqueue "
@@ -218,6 +256,7 @@ class DBSpendUpdateWriter:
                 org_id,
                 end_user_id,
             )
+            return None
 
     async def report_external_spend(
         self,
@@ -252,7 +291,6 @@ class DBSpendUpdateWriter:
             org_id=org_id,
             end_user_id=end_user_id,
             prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
             litellm_proxy_budget_name=litellm_proxy_budget_name,
             payload=payload,
         )
