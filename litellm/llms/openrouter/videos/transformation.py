@@ -1,7 +1,7 @@
 import base64
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, Tuple, Union, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, Union, runtime_checkable
 from urllib.parse import quote
 
 import httpx
@@ -78,7 +78,7 @@ class _OpenRouterVideoResponse(BaseModel):
     generation_id: str | None = None
     model: str | None = None
     polling_url: str | None = None
-    unsigned_urls: Tuple[str, ...] = ()
+    unsigned_urls: tuple[str, ...] = ()
     usage: _OpenRouterVideoUsage | None = None
 
 
@@ -180,7 +180,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         video_create_optional_request_params: dict[str, object],
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
-    ) -> Tuple[dict[str, object], RequestFiles, str]:
+    ) -> tuple[dict[str, object], RequestFiles, str]:
         optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(video_create_optional_request_params)
         request_data = {
             "model": model,
@@ -215,7 +215,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
         variant: str | None = None,
-    ) -> Tuple[str, dict[str, object]]:
+    ) -> tuple[str, dict[str, object]]:
         encoded_video_id = self._encoded_original_video_id(video_id)
         index_query = "" if variant is None else f"?index={quote(variant, safe='')}"
         return f"{self._videos_url(api_base)}/{encoded_video_id}/content{index_query}", {}
@@ -236,7 +236,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
         extra_body: dict[str, object] | None = None,
-    ) -> Tuple[str, dict[str, object]]:
+    ) -> tuple[str, dict[str, object]]:
         raise NotImplementedError("video remix is not supported for OpenRouter")
 
     def transform_video_remix_response(
@@ -256,7 +256,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         limit: int | None = None,
         order: str | None = None,
         extra_query: dict[str, object] | None = None,
-    ) -> Tuple[str, dict[str, object]]:
+    ) -> tuple[str, dict[str, object]]:
         raise NotImplementedError("video list is not supported for OpenRouter")
 
     def transform_video_list_response(
@@ -273,7 +273,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
-    ) -> Tuple[str, dict[str, object]]:
+    ) -> tuple[str, dict[str, object]]:
         raise NotImplementedError("video delete is not supported for OpenRouter")
 
     def transform_video_delete_response(
@@ -289,7 +289,7 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict[str, str],
-    ) -> Tuple[str, dict[str, object]]:
+    ) -> tuple[str, dict[str, object]]:
         return f"{self._videos_url(api_base)}/{self._encoded_original_video_id(video_id)}", {}
 
     def transform_video_status_retrieve_response(
