@@ -82,7 +82,7 @@ async def test_update_database_provider_cost_is_inserted_idempotently(request_id
         "end_time": datetime.now(),
         "team_id": "video-team",
         "org_id": "video-org",
-        "completion_response": MagicMock(),
+        "completion_response": {"id": "provider-cost-response"},
         "response_cost": 1.2096,
         "kwargs": {"model": "provider/model", "custom_llm_provider": "provider"},
     }
