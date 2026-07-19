@@ -653,11 +653,7 @@ def cost_per_token(
     else:
         model_info = _cached_get_model_info_helper(model=model, custom_llm_provider=custom_llm_provider)
 
-        if (
-            (model_info.get("input_cost_per_token") or 0.0) > 0
-            or (model_info.get("output_cost_per_token") or 0.0) > 0
-            or model_info.get("input_cost_per_request") is not None
-        ):
+        if (model_info.get("input_cost_per_token") or 0.0) > 0 or (model_info.get("output_cost_per_token") or 0.0) > 0:
             return generic_cost_per_token(
                 model=model,
                 usage=usage_block,
@@ -766,7 +762,6 @@ def _select_model_name_for_cost_calc(
             entry = litellm.model_cost[router_model_id]
             if (
                 entry.get("input_cost_per_token") is not None
-                or entry.get("input_cost_per_request") is not None
                 or entry.get("input_cost_per_second") is not None
                 or entry.get("tiered_pricing") is not None
             ):
@@ -1357,11 +1352,8 @@ def completion_cost(
                     if custom_pricing and litellm_logging_obj is not None:
                         _litellm_params = getattr(litellm_logging_obj, "litellm_params", None)
                         if _litellm_params is not None:
-                            for _metadata_key in ("metadata", "litellm_metadata"):
-                                _metadata = _litellm_params.get(_metadata_key, {}) or {}
-                                _video_model_info = _metadata.get("model_info", None)
-                                if _video_model_info is not None:
-                                    break
+                            _metadata = _litellm_params.get("metadata", {}) or {}
+                            _video_model_info = _metadata.get("model_info", None)
 
                     usage_obj = getattr(completion_response, "usage", None)
                     duration_seconds: Optional[float] = None
@@ -1789,14 +1781,14 @@ def response_cost_calculator(
             response_cost = 0.0
         else:
             if isinstance(response_object, BaseModel):
+                if custom_llm_provider == "openrouter":
+                    provider_response_cost = get_response_cost_from_usage(response_object)
+                    if provider_response_cost is not None:
+                        return provider_response_cost
                 if hasattr(response_object, "_hidden_params"):
                     response_object._hidden_params["optional_params"] = optional_params
                     provider_response_cost = get_response_cost_from_hidden_params(response_object._hidden_params)
-                    if provider_response_cost is not None and (provider_response_cost != 0 or not custom_pricing):
-                        return provider_response_cost
-                if custom_llm_provider == "openrouter":
-                    provider_response_cost = get_response_cost_from_usage(response_object)
-                    if provider_response_cost is not None and (provider_response_cost != 0 or not custom_pricing):
+                    if provider_response_cost is not None:
                         return provider_response_cost
 
             response_cost = completion_cost(

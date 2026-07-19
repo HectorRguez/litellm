@@ -2,7 +2,7 @@
 ## Helper utilities for cost_per_token()
 
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, TypedDict, cast
+from typing import Any, Literal, Optional, Tuple, TypedDict, cast
 
 import litellm
 from litellm._logging import verbose_logger
@@ -107,7 +107,7 @@ def _generic_cost_per_character(
     completion_characters: float,
     custom_prompt_cost: Optional[float],
     custom_completion_cost: Optional[float],
-) -> tuple[Optional[float], Optional[float]]:
+) -> Tuple[Optional[float], Optional[float]]:
     """
     Calculates cost per character for aspeech/speech calls.
 
@@ -200,7 +200,7 @@ def _parse_above_token_threshold(key: str) -> float:
 
 def _get_token_base_cost(
     model_info: ModelInfo, usage: Usage, service_tier: Optional[str] = None
-) -> tuple[float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float]:
     """
     Return prompt cost, completion cost, and cache costs for a given model and usage.
 
@@ -573,8 +573,7 @@ def _calculate_input_cost(
     """
     Calculates the input cost for a given model, prompt tokens, and completion tokens.
     """
-    prompt_cost = float(_get_cost_per_unit(model_info, "input_cost_per_request"))
-    prompt_cost += float(prompt_tokens_details["text_tokens"]) * prompt_base_cost
+    prompt_cost = float(prompt_tokens_details["text_tokens"]) * prompt_base_cost
 
     ### CACHE READ COST - Now uses tiered pricing
     prompt_cost += float(prompt_tokens_details["cache_hit_tokens"]) * cache_read_cost
@@ -682,7 +681,7 @@ def generic_cost_per_token(
     custom_llm_provider: str,
     service_tier: Optional[str] = None,
     data_residency: Optional[str] = None,
-) -> tuple[float, float]:
+) -> Tuple[float, float]:
     """
     Calculates the cost per token for a given model, prompt tokens, and completion tokens.
 

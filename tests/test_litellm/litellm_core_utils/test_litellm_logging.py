@@ -16,7 +16,7 @@ from litellm.constants import SENTRY_DENYLIST, SENTRY_PII_DENYLIST
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.litellm_logging import Logging as LitellmLogging
 from litellm.litellm_core_utils.litellm_logging import set_callbacks
-from litellm.types.utils import ModelResponse, TextCompletionResponse
+from litellm.types.utils import ModelResponse, TextCompletionResponse, Usage
 from litellm.types.videos.main import VideoObject
 
 
@@ -3423,6 +3423,34 @@ def test_video_status_normalization_creates_idempotent_cost_record() -> None:
     payload = logging_obj.model_call_details["standard_logging_object"]
     assert payload["id"] == "openrouter-video-cost:generation-123"
     assert payload["response_cost"] == 0.6048
+
+
+def test_openrouter_logging_prefers_usage_cost_over_hidden_zero() -> None:
+    logging_obj = LitellmLogging(
+        model="google/lyria-3-clip-preview",
+        messages=[{"role": "user", "content": "Generate music"}],
+        stream=True,
+        call_type="completion",
+        litellm_call_id="openrouter-audio-call",
+        start_time=time.time(),
+        function_id="test-fn",
+    )
+    logging_obj.model_call_details["custom_llm_provider"] = "openrouter"
+    logging_obj.optional_params = {}
+    response = ModelResponse(
+        id="openrouter-audio",
+        model="google/lyria-3-clip-preview",
+        choices=[],
+        usage=Usage(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost=0.03,
+        ),
+    )
+    response._hidden_params["response_cost"] = 0.0
+
+    assert logging_obj._response_cost_calculator(result=response) == 0.03
 
 
 def test_success_handler_unified_helper_runs_for_typed_results():

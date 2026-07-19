@@ -44,21 +44,6 @@ from litellm.litellm_core_utils.llm_cost_calc.utils import (
 from litellm.types.utils import CacheCreationTokenDetails, Usage
 
 
-def test_generic_cost_per_token_includes_flat_request_cost(monkeypatch):
-    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    monkeypatch.setattr(litellm, "model_cost", litellm.get_model_cost_map(url=""))
-    usage = Usage(prompt_tokens=70, completion_tokens=4, total_tokens=74)
-
-    prompt_cost, completion_cost = generic_cost_per_token(
-        model="google/lyria-3-clip-preview",
-        usage=usage,
-        custom_llm_provider="openrouter",
-    )
-
-    assert prompt_cost == 0.04
-    assert completion_cost == 0
-
-
 def test_reasoning_tokens_no_price_set():
     # Use o1 - o1-mini was deprecated/renamed; o1 has same reasoning-token semantics
     # (no separate output_cost_per_reasoning_token, so all completion tokens use output_cost_per_token)

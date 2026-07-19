@@ -184,7 +184,6 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     max_input_tokens: Required[Optional[int]]
     max_output_tokens: Required[Optional[int]]
     input_cost_per_token: Required[Optional[float]]
-    input_cost_per_request: Optional[float]
     input_cost_per_token_flex: Optional[float]  # OpenAI flex service tier pricing
     input_cost_per_token_priority: Optional[float]  # OpenAI priority service tier pricing
     cache_creation_input_token_cost: Optional[float]
@@ -256,7 +255,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
         Literal["per_query", "per_prompt"]
     ]  # "per_query" (Gemini 3.x) or "per_prompt" (Gemini 2.x)
     citation_cost_per_token: Optional[float]  # Cost per citation token for Perplexity
-    tiered_pricing: Optional[list[dict[str, Any]]]  # Tiered pricing structure for models like Dashscope
+    tiered_pricing: Optional[List[Dict[str, Any]]]  # Tiered pricing structure for models like Dashscope
     litellm_provider: Required[str]
     mode: Required[
         Literal[
@@ -272,7 +271,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     ]
     tpm: Optional[int]
     rpm: Optional[int]
-    provider_specific_entry: Optional[dict[str, float]]
+    provider_specific_entry: Optional[Dict[str, float]]
     uses_embed_content: Optional[bool]
 
 
@@ -281,7 +280,7 @@ class ModelInfo(ModelInfoBase, total=False):
     Model info for a given model, this is information found in litellm.model_prices_and_context_window.json
     """
 
-    supported_openai_params: Required[Optional[list[str]]]
+    supported_openai_params: Required[Optional[List[str]]]
 
 
 class GenericStreamingChunk(TypedDict, total=False):
@@ -3027,7 +3026,6 @@ class StandardCallbackDynamicParams(TypedDict, total=False):
 class CustomPricingLiteLLMParams(BaseModel):
     ## CUSTOM PRICING ##
     input_cost_per_token: Optional[float] = None
-    input_cost_per_request: Optional[float] = None
     output_cost_per_token: Optional[float] = None
     input_cost_per_second: Optional[float] = None
     output_cost_per_second: Optional[float] = None

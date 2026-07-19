@@ -118,6 +118,32 @@ def test_cost_calculator_with_response_cost_in_additional_headers():
     assert result == 1000
 
 
+def test_openrouter_usage_cost_overrides_zero_hidden_cost():
+    response = ModelResponse(
+        id="openrouter-audio",
+        model="google/lyria-3-clip-preview",
+        choices=[],
+        usage=Usage(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost=0.03,
+        ),
+    )
+    response._hidden_params["response_cost"] = 0.0
+
+    result = response_cost_calculator(
+        response_object=response,
+        model="google/lyria-3-clip-preview",
+        custom_llm_provider="openrouter",
+        call_type="completion",
+        optional_params={},
+        custom_pricing=True,
+    )
+
+    assert result == 0.03
+
+
 def test_baseten_model_api_pricing_entries():
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     litellm.model_cost = litellm.get_model_cost_map(url="")

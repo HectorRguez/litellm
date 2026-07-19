@@ -4893,7 +4893,7 @@ def _strip_model_name(model: str, custom_llm_provider: Optional[str]) -> str:
 
 
 # Global case-insensitive lookup map for model_cost (built eagerly at module import)
-_model_cost_lowercase_map: Optional[dict[str, str]] = None
+_model_cost_lowercase_map: Optional[Dict[str, str]] = None
 
 # Monotonic counter bumped on every model_cost mutation. Consumers that
 # memoize derived state (e.g. provider-specific indices) can include this
@@ -4921,7 +4921,7 @@ def _invalidate_model_cost_lowercase_map() -> None:
     _cached_get_model_info_helper.cache_clear()
 
 
-def _rebuild_model_cost_lowercase_map() -> dict[str, str]:
+def _rebuild_model_cost_lowercase_map() -> Dict[str, str]:
     """Rebuild the case-insensitive lookup map from the current model_cost.
 
     Returns:
@@ -5309,7 +5309,7 @@ def _get_model_info_helper(
             5. 'stripped_model_name' in litellm.model_cost. Checks if 'ft:gpt-3.5-turbo' in model map, if 'ft:gpt-3.5-turbo:my-org:custom_suffix:id' given.
             """
 
-            _model_info: Optional[dict[str, Any]] = None
+            _model_info: Optional[Dict[str, Any]] = None
             key: Optional[str] = None
 
             # Use case-insensitive lookup for all model name checks
@@ -5402,7 +5402,6 @@ def _get_model_info_helper(
                 max_input_tokens=_model_info.get("max_input_tokens", None),
                 max_output_tokens=_model_info.get("max_output_tokens", None),
                 input_cost_per_token=_input_cost_per_token,
-                input_cost_per_request=_model_info.get("input_cost_per_request", None),
                 input_cost_per_token_flex=_model_info.get("input_cost_per_token_flex", None),
                 input_cost_per_token_priority=_model_info.get("input_cost_per_token_priority", None),
                 cache_creation_input_token_cost=_model_info.get("cache_creation_input_token_cost", None),
@@ -5833,7 +5832,7 @@ def load_test_model(
         }
 
 
-def get_provider_fields(custom_llm_provider: str) -> list[ProviderField]:
+def get_provider_fields(custom_llm_provider: str) -> List[ProviderField]:
     """Return the fields required for each provider"""
 
     if custom_llm_provider == "databricks":
