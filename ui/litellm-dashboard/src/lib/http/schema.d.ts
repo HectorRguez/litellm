@@ -23753,10 +23753,17 @@ export interface components {
         ExternalSpendReportResponse: {
             /** Created */
             created: boolean;
+            /** Error */
+            error?: string | null;
             /** Request Id */
             request_id: string;
             /** Spend */
-            spend: number;
+            spend: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "resolved" | "unresolved";
         };
         /** ExternalSpendUsage */
         ExternalSpendUsage: {

@@ -48,6 +48,7 @@ from litellm.proxy._types import (
     SpendLogsPayload,
     SpendUpdateQueueItem,
     ToolDiscoveryQueueItem,
+    UnresolvedProviderCost,
 )
 from litellm.proxy.db.db_transaction_queue.daily_spend_update_queue import (
     DailySpendUpdateQueue,
@@ -299,6 +300,54 @@ class DBSpendUpdateWriter:
             payload=payload,
         )
         return True
+
+    async def report_unresolved_provider_cost(
+        self,
+        *,
+        unresolved_cost: UnresolvedProviderCost,
+        start_time: datetime,
+        end_time: datetime,
+        request_tags: list[str],
+        end_user_id: str | None,
+        user_id: str | None,
+        team_id: str | None,
+        org_id: str | None,
+        api_base: str,
+        prisma_client: PrismaClient,
+    ) -> bool:
+        from litellm.models import LiteLLM_ErrorLogs
+        from litellm.repositories.table_repositories import ErrorLogsRepository
+
+        error_log = LiteLLM_ErrorLogs(
+            request_id=f"unresolved-cost:{unresolved_cost.tracking_id}",
+            startTime=start_time,
+            endTime=end_time,
+            api_base=api_base,
+            model_group=unresolved_cost.model,
+            litellm_model_name=unresolved_cost.model,
+            request_kwargs={
+                "provider": unresolved_cost.provider,
+                "provider_tracking_id": unresolved_cost.tracking_id,
+                "reason": unresolved_cost.reason,
+                "evidence": unresolved_cost.evidence,
+                "metadata": unresolved_cost.metadata,
+                "tags": request_tags,
+                "end_user": end_user_id,
+                "user_id": user_id,
+                "team_id": team_id,
+                "organization_id": org_id,
+            },
+            exception_type="UnresolvedProviderCost",
+            exception_string=unresolved_cost.reason,
+            status_code="cost_unresolved",
+        )
+        db_payload = prisma_client.jsonify_object(error_log.model_dump(exclude_none=True))
+        result = await ErrorLogsRepository(prisma_client).table.create_many(
+            data=[db_payload],
+            skip_duplicates=True,
+        )
+        created_count = result if isinstance(result, int) else result.count
+        return created_count > 0
 
     def _enqueue_tool_registry_upsert(
         self,

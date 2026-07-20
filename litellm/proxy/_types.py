@@ -56,6 +56,7 @@ from litellm.types.utils import (
     StandardLoggingVectorStoreRequest,
     StandardPassThroughResponseObject,
     TextCompletionResponse,
+    UnresolvedProviderCost as UnresolvedProviderCost,
 )
 from litellm.types.videos.main import VideoObject
 
@@ -2986,8 +2987,10 @@ class ExternalSpendReportRequest(LiteLLMPydanticObjectBase):
 
 class ExternalSpendReportResponse(LiteLLMPydanticObjectBase):
     request_id: str
-    spend: float
+    status: Literal["resolved", "unresolved"]
+    spend: float | None
     created: bool
+    error: str | None = None
 
 
 class TokenCountRequest(LiteLLMPydanticObjectBase):

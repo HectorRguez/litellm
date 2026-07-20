@@ -31,6 +31,7 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.spend_tracking.external_spend_cost_calculator import (
     external_spend_cost_calculator,
 )
+from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
     get_spend_by_team,
     get_spend_by_team_and_customer,
@@ -77,21 +78,54 @@ async def report_external_spend(
             detail="Database not connected",
         )
 
-    try:
-        resolved_cost = await external_spend_cost_calculator.resolve(data)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="External provider pricing lookup failed",
-        ) from exc
-
     external_request_id = f"external:{data.provider}:{data.request_id}"
     now = datetime.now(timezone.utc)
+    try:
+        resolved_cost = await external_spend_cost_calculator.resolve(data)
+    except (ValueError, httpx.HTTPError) as exc:
+        reason = (
+            str(exc)
+            if isinstance(exc, ValueError)
+            else f"External provider pricing lookup failed: {type(exc).__name__}"
+        )
+        unresolved_cost = UnresolvedProviderCost(
+            provider=data.provider,
+            tracking_id=external_request_id,
+            model=data.external_model,
+            reason=reason,
+            evidence={
+                "usage_unit": data.usage.unit,
+                "usage_quantity": data.usage.quantity,
+            },
+            metadata=data.metadata,
+        )
+        created = await proxy_logging_obj.db_spend_update_writer.report_unresolved_provider_cost(
+            unresolved_cost=unresolved_cost,
+            start_time=now,
+            end_time=now,
+            request_tags=data.tags,
+            end_user_id=data.end_user,
+            user_id=user_api_key_dict.user_id,
+            team_id=user_api_key_dict.team_id,
+            org_id=user_api_key_dict.org_id,
+            api_base=external_spend_cost_calculator.FAL_PRICING_URL,
+            prisma_client=prisma_client,
+        )
+        if created:
+            error_msg = f"Provider cost unresolved for {external_request_id}: {reason}"
+            await proxy_logging_obj.failed_tracking_alert(
+                error_message=error_msg,
+                failing_model=data.external_model,
+            )
+            spend_log_error(error_msg)
+        return ExternalSpendReportResponse(
+            request_id=external_request_id,
+            status="unresolved",
+            spend=None,
+            created=created,
+            error=reason,
+        )
+
     metadata = {
         "user_api_key": user_api_key_dict.api_key,
         "user_api_key_alias": user_api_key_dict.key_alias,
@@ -135,6 +169,7 @@ async def report_external_spend(
     )
     return ExternalSpendReportResponse(
         request_id=external_request_id,
+        status="resolved",
         spend=resolved_cost.spend,
         created=created,
     )

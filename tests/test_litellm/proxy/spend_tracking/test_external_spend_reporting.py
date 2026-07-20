@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -23,6 +24,7 @@ from litellm.proxy.spend_tracking.external_spend_cost_calculator import (
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     report_external_spend,
 )
+from litellm.types.utils import UnresolvedProviderCost
 
 
 def test_external_spend_report_rejects_negative_usage() -> None:
@@ -99,6 +101,8 @@ async def test_external_spend_report_uses_authenticated_attribution(
     call = report_spend.await_args.kwargs
     payload = call["payload"]
     assert response.created is True
+    assert response.status == "resolved"
+    assert response.spend == 0.015
     assert response.request_id == "external:fal:fal-request-1"
     assert call["hashed_token"] == "hashed-worker-key"
     assert call["user_id"] == "worker-user"
@@ -113,6 +117,64 @@ async def test_external_spend_report_uses_authenticated_attribution(
     assert payload["request_tags"] == '["course:course-1", "video:video-1"]'
     assert json.loads(payload["metadata"])["spend_logs_metadata"]["billing_quantity"] == 0.1
     resolve_cost.assert_awaited_once_with(request)
+
+
+@pytest.mark.asyncio
+async def test_external_spend_pricing_failure_is_recorded_as_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from litellm.proxy import proxy_server
+    from litellm.proxy.spend_tracking import spend_management_endpoints
+
+    report_unresolved = AsyncMock(return_value=True)
+    report_spend = AsyncMock()
+    failed_tracking_alert = AsyncMock()
+    monkeypatch.setattr(proxy_server, "prisma_client", SimpleNamespace())
+    monkeypatch.setattr(
+        proxy_server.proxy_logging_obj.db_spend_update_writer,
+        "report_unresolved_provider_cost",
+        report_unresolved,
+    )
+    monkeypatch.setattr(
+        proxy_server.proxy_logging_obj.db_spend_update_writer,
+        "report_external_spend",
+        report_spend,
+    )
+    monkeypatch.setattr(proxy_server.proxy_logging_obj, "failed_tracking_alert", failed_tracking_alert)
+    monkeypatch.setattr(
+        spend_management_endpoints.external_spend_cost_calculator,
+        "resolve",
+        AsyncMock(side_effect=httpx.ConnectError("pricing unavailable")),
+    )
+    request = ExternalSpendReportRequest(
+        provider="fal",
+        external_model="fal-ai/gemini-3.1-flash-tts",
+        usage=ExternalSpendUsage(unit="billable_units", quantity=0.1),
+        request_id="fal-request-1",
+        end_user="course-user",
+        tags=["course:course-1", "video:video-1"],
+        metadata={"course_id": "course-1"},
+    )
+
+    response = await report_external_spend(
+        request,
+        UserAPIKeyAuth(
+            api_key="hashed-worker-key",
+            user_id="worker-user",
+            team_id="video-team",
+            org_id="video-org",
+        ),
+    )
+
+    unresolved = report_unresolved.await_args.kwargs["unresolved_cost"]
+    assert response.status == "unresolved"
+    assert response.spend is None
+    assert response.error == "External provider pricing lookup failed: ConnectError"
+    assert unresolved.tracking_id == "external:fal:fal-request-1"
+    assert unresolved.evidence == {"usage_unit": "billable_units", "usage_quantity": 0.1}
+    assert report_unresolved.await_args.kwargs["request_tags"] == ["course:course-1", "video:video-1"]
+    report_spend.assert_not_awaited()
+    failed_tracking_alert.assert_awaited_once()
 
 
 def test_external_spend_model_is_not_treated_as_routing_model() -> None:
@@ -239,3 +301,42 @@ async def test_external_spend_accepts_batch_payload_result(
 
     assert created is True
     batch_updates.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_provider_cost_is_idempotent_and_excluded_from_spend() -> None:
+    create_many = AsyncMock(side_effect=[1, 0])
+    prisma_client = SimpleNamespace(
+        db=SimpleNamespace(litellm_errorlogs=SimpleNamespace(create_many=create_many)),
+        jsonify_object=lambda value: value,
+    )
+    writer = DBSpendUpdateWriter()
+
+    params = {
+        "unresolved_cost": UnresolvedProviderCost(
+            provider="fal",
+            tracking_id="external:fal:request-1",
+            model="fal-ai/gemini-3.1-flash-tts",
+            reason="pricing unavailable",
+            evidence={"usage_quantity": 0.1},
+            metadata={"course_id": "course-1"},
+        ),
+        "start_time": datetime.now(),
+        "end_time": datetime.now(),
+        "request_tags": ["course:course-1", "video:video-1"],
+        "end_user_id": "course-user",
+        "user_id": "worker-user",
+        "team_id": "video-team",
+        "org_id": "video-org",
+        "api_base": "https://api.fal.ai/v1/models/pricing",
+        "prisma_client": prisma_client,
+    }
+
+    assert await writer.report_unresolved_provider_cost(**params) is True
+    assert await writer.report_unresolved_provider_cost(**params) is False
+    payload = create_many.await_args_list[0].kwargs["data"][0]
+    assert payload["request_id"] == "unresolved-cost:external:fal:request-1"
+    assert payload["exception_type"] == "UnresolvedProviderCost"
+    assert payload["status_code"] == "cost_unresolved"
+    assert payload["request_kwargs"]["tags"] == ["course:course-1", "video:video-1"]
+    assert not hasattr(prisma_client.db, "litellm_spendlogs")

@@ -21,6 +21,7 @@ from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import UnresolvedProviderCost
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import (
     decode_video_id_with_provider,
@@ -82,6 +83,13 @@ class _FalCostContext(BaseModel):
 
     authorization: str
     billable_units: Decimal
+    endpoint_id: str
+    request_id: str
+
+
+class _FalCostIdentity(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     endpoint_id: str
     request_id: str
 
@@ -455,71 +463,74 @@ class FalAIVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> None:
+        logging_obj.model_call_details["provider_cost_authoritative"] = True
         try:
-            context = self._cost_context(raw_response, logging_obj)
-            if context is None:
-                return
+            identity = self._cost_identity(logging_obj)
+            self._record_provider_cost_identity(identity, logging_obj)
+            context = self._cost_context(raw_response, identity)
             price = self._get_cached_price(context) or self._fetch_sync_price(context)
-            if price is not None:
-                self._record_provider_cost(context, price, logging_obj)
+            if price is None:
+                raise ValueError("Fal pricing response did not include a valid USD price for the endpoint")
+            self._record_provider_cost(context, price, logging_obj)
         except (httpx.HTTPError, RuntimeError, TypeError, ValidationError, ValueError) as exc:
-            verbose_logger.warning("Unable to track fal.ai provider cost: %s", type(exc).__name__)
+            self._record_unresolved_provider_cost(raw_response, logging_obj, exc)
 
     async def _track_async_provider_cost(
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> None:
+        logging_obj.model_call_details["provider_cost_authoritative"] = True
         try:
-            context = self._cost_context(raw_response, logging_obj)
-            if context is None:
-                return
+            identity = self._cost_identity(logging_obj)
+            self._record_provider_cost_identity(identity, logging_obj)
+            context = self._cost_context(raw_response, identity)
             cached_price = self._get_cached_price(context)
             price = cached_price if cached_price is not None else await self._fetch_async_price(context)
-            if price is not None:
-                self._record_provider_cost(context, price, logging_obj)
+            if price is None:
+                raise ValueError("Fal pricing response did not include a valid USD price for the endpoint")
+            self._record_provider_cost(context, price, logging_obj)
         except (httpx.HTTPError, RuntimeError, TypeError, ValidationError, ValueError) as exc:
-            verbose_logger.warning("Unable to track fal.ai provider cost: %s", type(exc).__name__)
+            self._record_unresolved_provider_cost(raw_response, logging_obj, exc)
+
+    def _cost_identity(self, logging_obj: LiteLLMLoggingObj) -> _FalCostIdentity:
+        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(logging_obj.optional_params)
+        encoded_video_id = optional_params.get("video_id")
+        if not isinstance(encoded_video_id, str):
+            raise ValueError("Fal video cost tracking requires the encoded video ID")
+        decoded_video_id = decode_video_id_with_provider(encoded_video_id)
+        endpoint_id = decoded_video_id.get("model_id")
+        request_id = decoded_video_id.get("video_id")
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            raise ValueError("Fal video ID is missing its model")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("Fal video ID is missing its request ID")
+        return _FalCostIdentity(endpoint_id=endpoint_id, request_id=request_id)
 
     def _cost_context(
         self,
         raw_response: httpx.Response,
-        logging_obj: LiteLLMLoggingObj,
-    ) -> _FalCostContext | None:
-        optional_params = _OBJECT_MAPPING_ADAPTER.validate_python(
-            cast(  # cast-ok: the adapter validates this legacy untyped logging field
-                object, logging_obj.optional_params
-            )
-        )
-        encoded_video_id = optional_params.get("video_id")
-        if not isinstance(encoded_video_id, str):
-            return None
-        decoded_video_id = decode_video_id_with_provider(encoded_video_id)
-        endpoint_id = decoded_video_id.get("model_id")
-        request_id = decoded_video_id.get("video_id")
+        identity: _FalCostIdentity,
+    ) -> _FalCostContext:
         request_headers = _STRING_MAPPING_ADAPTER.validate_python(raw_response.request.headers)
         response_headers = _STRING_MAPPING_ADAPTER.validate_python(raw_response.headers)
         authorization = request_headers.get("authorization")
         raw_billable_units = response_headers.get("x-fal-billable-units")
-        if not isinstance(endpoint_id, str) or not endpoint_id:
-            return None
-        if not isinstance(request_id, str) or not request_id:
-            return None
         if not isinstance(authorization, str) or not authorization:
-            return None
+            raise ValueError("Fal video response is missing the pricing authorization context")
         if raw_billable_units is None:
-            return None
+            raise ValueError("Fal video response is missing X-Fal-Billable-Units")
         try:
             billable_units = Decimal(raw_billable_units)
-        except InvalidOperation:
-            return None
+        except InvalidOperation as exc:
+            raise ValueError("Fal video response contains invalid billable units") from exc
         if not billable_units.is_finite() or billable_units < 0:
-            return None
+            raise ValueError("Fal video response contains invalid billable units")
         return _FalCostContext(
             authorization=authorization,
             billable_units=billable_units,
-            endpoint_id=endpoint_id,
-            request_id=request_id,
+            endpoint_id=identity.endpoint_id,
+            request_id=identity.request_id,
         )
 
     def _fetch_sync_price(self, context: _FalCostContext) -> _FalPrice | None:
@@ -566,8 +577,46 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
     ) -> None:
         logging_obj.model_call_details["response_cost"] = float(context.billable_units * price.unit_price)
-        logging_obj.model_call_details["provider_cost_tracking_id"] = f"fal-video-cost:{context.request_id}"
-        logging_obj.model_call_details["provider_cost_tracking_model"] = context.endpoint_id
+        logging_obj.model_call_details.pop("provider_cost_unresolved", None)
+
+    def _record_provider_cost_identity(
+        self,
+        identity: _FalCostIdentity,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        logging_obj.model_call_details["provider_cost_tracking_id"] = f"fal-video-cost:{identity.request_id}"
+        logging_obj.model_call_details["provider_cost_tracking_model"] = identity.endpoint_id
+
+    def _record_unresolved_provider_cost(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        error: Exception,
+    ) -> None:
+        details = _OBJECT_MAPPING_ADAPTER.validate_python(logging_obj.model_call_details)
+        tracking_id = details.get("provider_cost_tracking_id") or details.get("litellm_call_id")
+        tracking_model = details.get("provider_cost_tracking_model") or details.get("model")
+        normalized_tracking_id = (
+            tracking_id if isinstance(tracking_id, str) and tracking_id else "fal-video-cost:unknown"
+        )
+        normalized_model = tracking_model if isinstance(tracking_model, str) and tracking_model else "fal_ai"
+        raw_billable_units = raw_response.headers.get("x-fal-billable-units")
+        unresolved = UnresolvedProviderCost(
+            provider="fal",
+            tracking_id=normalized_tracking_id,
+            model=normalized_model,
+            reason=f"{type(error).__name__}: {error}",
+            evidence={
+                "pricing_source": self.PRICING_URL,
+                **({"billable_units": raw_billable_units} if raw_billable_units is not None else {}),
+            },
+        )
+        logging_obj.model_call_details["provider_cost_unresolved"] = unresolved.model_dump()
+        verbose_logger.error(
+            "Fal provider cost is unresolved for %s: %s",
+            normalized_tracking_id,
+            unresolved.reason,
+        )
 
     def _queue_root(self, model: str) -> str:
         model_parts = model.split("/")

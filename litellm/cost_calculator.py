@@ -1720,6 +1720,18 @@ def get_response_cost_from_usage(
     return float(response_cost)
 
 
+def _requires_provider_reported_cost(
+    custom_llm_provider: str | None,
+    litellm_logging_obj: LitellmLoggingObject | None,
+) -> bool:
+    if custom_llm_provider == "openrouter":
+        return True
+    if litellm_logging_obj is None:
+        return False
+    model_call_details = getattr(litellm_logging_obj, "model_call_details", None)
+    return isinstance(model_call_details, dict) and model_call_details.get("provider_cost_authoritative") is True
+
+
 def response_cost_calculator(
     response_object: Union[
         ModelResponse,
@@ -1770,7 +1782,7 @@ def response_cost_calculator(
     service_tier: Optional[str] = None,  # for OpenAI service tier pricing
     ### DATA RESIDENCY ###
     data_residency: Optional[str] = None,  # for OpenAI regional-processing uplift (e.g. "eu", "us")
-) -> float:
+) -> float | None:
     """
     Returns
     - float or None: cost of response
@@ -1790,6 +1802,12 @@ def response_cost_calculator(
                     provider_response_cost = get_response_cost_from_hidden_params(response_object._hidden_params)
                     if provider_response_cost is not None:
                         return provider_response_cost
+
+            if _requires_provider_reported_cost(
+                custom_llm_provider=custom_llm_provider,
+                litellm_logging_obj=litellm_logging_obj,
+            ):
+                return None
 
             response_cost = completion_cost(
                 completion_response=response_object,

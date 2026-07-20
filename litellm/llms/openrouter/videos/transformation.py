@@ -16,6 +16,7 @@ from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.llms.openrouter.common_utils import OpenRouterException
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import UnresolvedProviderCost
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import encode_video_id_with_provider, extract_original_video_id
 
@@ -395,15 +396,34 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         video: VideoObject,
         logging_obj: LiteLLMLoggingObj,
     ) -> None:
-        if response.usage is None or response.usage.cost is None:
+        if response.status != "completed":
             return
         tracking_id = f"openrouter-video-cost:{response.generation_id or response.id}"
         tracking_model = response.model or logging_obj.model_call_details.get("model") or "openrouter"
-        logging_obj.model_call_details["response_cost"] = response.usage.cost
+        logging_obj.model_call_details["provider_cost_authoritative"] = True
         logging_obj.model_call_details["provider_cost_tracking_id"] = tracking_id
         logging_obj.model_call_details["provider_cost_tracking_model"] = tracking_model
+        if response.usage is None or response.usage.cost is None:
+            unresolved = UnresolvedProviderCost(
+                provider="openrouter",
+                tracking_id=tracking_id,
+                model=tracking_model,
+                reason="OpenRouter completed video response omitted usage.cost",
+                evidence={"status": response.status},
+            )
+            logging_obj.model_call_details["provider_cost_unresolved"] = unresolved.model_dump()
+            video._hidden_params = {
+                "provider_cost_authoritative": True,
+                "provider_cost_tracking_id": tracking_id,
+                "provider_cost_tracking_model": tracking_model,
+                "provider_cost_unresolved": unresolved.model_dump(),
+            }
+            return
+        logging_obj.model_call_details["response_cost"] = response.usage.cost
+        logging_obj.model_call_details.pop("provider_cost_unresolved", None)
         video._hidden_params = {
             "response_cost": response.usage.cost,
+            "provider_cost_authoritative": True,
             "provider_cost_tracking_id": tracking_id,
             "provider_cost_tracking_model": tracking_model,
         }

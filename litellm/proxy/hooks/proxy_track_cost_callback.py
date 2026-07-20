@@ -31,6 +31,7 @@ from litellm.types.utils import (
     CallTypes,
     StandardLoggingPayload,
     StandardLoggingPayloadErrorInformation,
+    UnresolvedProviderCost,
 )
 from litellm.utils import get_end_user_id_for_cost_tracking
 
@@ -186,6 +187,7 @@ class _ProxyDBLogger(CustomLogger):
     ):
         from litellm.proxy.proxy_server import (
             increment_spend_counters,
+            prisma_client,
             proxy_logging_obj,
             update_cache,
         )
@@ -280,6 +282,33 @@ class _ProxyDBLogger(CustomLogger):
                     await _release_budget_reservation(budget_reservation=budget_reservation)
             else:
                 await _release_budget_reservation(budget_reservation=budget_reservation)
+                unresolved_payload = kwargs.get("provider_cost_unresolved")
+                if unresolved_payload is not None:
+                    if prisma_client is None:
+                        raise RuntimeError("Database is not connected; unresolved provider cost could not be recorded")
+                    unresolved_cost = UnresolvedProviderCost.model_validate(unresolved_payload)
+                    created = await proxy_logging_obj.db_spend_update_writer.report_unresolved_provider_cost(
+                        unresolved_cost=unresolved_cost,
+                        start_time=start_time if isinstance(start_time, datetime) else datetime.now(),
+                        end_time=end_time if isinstance(end_time, datetime) else datetime.now(),
+                        request_tags=tags,
+                        end_user_id=end_user_id,
+                        user_id=user_id,
+                        team_id=team_id,
+                        org_id=org_id,
+                        api_base=str(kwargs.get("api_base") or ""),
+                        prisma_client=prisma_client,
+                    )
+                    if created:
+                        error_msg = (
+                            f"Provider cost unresolved for {unresolved_cost.tracking_id}: {unresolved_cost.reason}"
+                        )
+                        await proxy_logging_obj.failed_tracking_alert(
+                            error_message=error_msg,
+                            failing_model=unresolved_cost.model,
+                        )
+                        verbose_proxy_logger.error(error_msg)
+                    return
                 # Non-model call types (health checks, afile_delete) have no model or standard_logging_object.
                 # Use .get() for "stream" to avoid KeyError on health checks.
                 # WS session wrappers (_aresponses_websocket, _arealtime) also reach here with

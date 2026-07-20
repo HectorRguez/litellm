@@ -13,7 +13,7 @@ from litellm.proxy.hooks.proxy_track_cost_callback import (
     _update_database_and_spend_counters,
 )
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
-from litellm.types.utils import StandardLoggingPayload
+from litellm.types.utils import StandardLoggingPayload, UnresolvedProviderCost
 
 
 @pytest.mark.parametrize(
@@ -218,3 +218,56 @@ async def test_track_cost_callback_skips_duplicate_provider_cost_rollups() -> No
     mock_update_cache.assert_not_awaited()
     mock_proxy_logging.slack_alerting_instance.customer_spend_alert.assert_not_awaited()
     mock_proxy_logging.failed_tracking_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_track_cost_callback_records_unresolved_cost_without_spend() -> None:
+    logger = _ProxyDBLogger()
+    unresolved = UnresolvedProviderCost(
+        provider="openrouter",
+        tracking_id="openrouter-video-cost:generation-123",
+        model="openrouter/bytedance/seedance-2.0",
+        reason="OpenRouter completed video response omitted usage.cost",
+        evidence={"status": "completed"},
+    )
+    kwargs = {
+        "call_type": "avideo_status",
+        "model": unresolved.model,
+        "provider_cost_unresolved": unresolved.model_dump(),
+        "litellm_params": {
+            "metadata": {
+                "user_api_key": "hashed-worker-key",
+                "user_api_key_user_id": "worker-user",
+                "user_api_key_team_id": "video-team",
+                "user_api_key_org_id": "video-org",
+                "tags": ["course:course-1", "video:video-1"],
+            },
+            "user_api_key_end_user_id": "course-user",
+        },
+    }
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", SimpleNamespace()),
+        patch("litellm.proxy.proxy_server.proxy_logging_obj") as mock_proxy_logging,
+        patch(
+            "litellm.proxy.spend_tracking.budget_reservation.release_budget_reservation",
+            new_callable=AsyncMock,
+        ),
+    ):
+        mock_proxy_logging.db_spend_update_writer.report_unresolved_provider_cost = AsyncMock(return_value=True)
+        mock_proxy_logging.db_spend_update_writer.update_database = AsyncMock()
+        mock_proxy_logging.failed_tracking_alert = AsyncMock()
+
+        await logger._PROXY_track_cost_callback(
+            kwargs=kwargs,
+            completion_response={"id": "generation-123"},
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        )
+
+    call = mock_proxy_logging.db_spend_update_writer.report_unresolved_provider_cost.await_args.kwargs
+    assert call["unresolved_cost"] == unresolved
+    assert call["request_tags"] == ["course:course-1", "video:video-1"]
+    assert call["end_user_id"] == "course-user"
+    mock_proxy_logging.db_spend_update_writer.update_database.assert_not_awaited()
+    mock_proxy_logging.failed_tracking_alert.assert_awaited_once()

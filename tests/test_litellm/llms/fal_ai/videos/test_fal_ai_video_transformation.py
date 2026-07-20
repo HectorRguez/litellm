@@ -220,12 +220,21 @@ def test_content_response_downloads_video() -> None:
         )
 
     config = FalAIVideoConfig(sync_media_fetcher=media_fetcher)
+    logging_obj = Mock(
+        optional_params={},
+        model_call_details={
+            "model": "fal_ai/fal-ai/test-video",
+            "litellm_call_id": "content-call-1",
+        },
+    )
     content = config.transform_video_content_response(
         raw_response=_json_response({"video": {"url": "https://v3.fal.media/files/video.mp4"}}),
-        logging_obj=Mock(),
+        logging_obj=logging_obj,
     )
 
     assert content == b"video-bytes"
+    assert logging_obj.model_call_details["provider_cost_authoritative"] is True
+    assert logging_obj.model_call_details["provider_cost_unresolved"]["tracking_id"] == "content-call-1"
 
 
 def test_content_response_tracks_provider_reported_cost_and_caches_pricing() -> None:
@@ -310,6 +319,17 @@ def test_content_response_does_not_fail_when_pricing_is_unavailable() -> None:
 
     assert content == b"video-bytes"
     assert "response_cost" not in logging_obj.model_call_details
+    assert logging_obj.model_call_details["provider_cost_unresolved"] == {
+        "provider": "fal",
+        "tracking_id": "fal-video-cost:request-123",
+        "model": "fal-ai/heygen/avatar5/digital-twin",
+        "reason": "ConnectError: pricing unavailable",
+        "evidence": {
+            "pricing_source": "https://api.fal.ai/v1/models/pricing",
+            "billable_units": "21",
+        },
+        "metadata": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -323,12 +343,20 @@ async def test_async_content_response_downloads_video() -> None:
         )
 
     config = FalAIVideoConfig(async_media_fetcher=media_fetcher)
+    logging_obj = Mock(
+        optional_params={},
+        model_call_details={
+            "model": "fal_ai/fal-ai/test-video",
+            "litellm_call_id": "async-content-call-1",
+        },
+    )
     content = await config.async_transform_video_content_response(
         raw_response=_json_response({"video": {"url": "https://v3.fal.media/files/video.mp4"}}),
-        logging_obj=Mock(),
+        logging_obj=logging_obj,
     )
 
     assert content == b"async-video-bytes"
+    assert logging_obj.model_call_details["provider_cost_unresolved"]["tracking_id"] == "async-content-call-1"
 
 
 @pytest.mark.asyncio

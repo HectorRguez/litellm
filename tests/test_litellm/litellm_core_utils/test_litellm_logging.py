@@ -3436,6 +3436,7 @@ def test_openrouter_logging_prefers_usage_cost_over_hidden_zero() -> None:
         function_id="test-fn",
     )
     logging_obj.model_call_details["custom_llm_provider"] = "openrouter"
+    logging_obj.model_call_details["additional_response_cost"] = 1.0
     logging_obj.optional_params = {}
     response = ModelResponse(
         id="openrouter-audio",
@@ -3451,6 +3452,36 @@ def test_openrouter_logging_prefers_usage_cost_over_hidden_zero() -> None:
     response._hidden_params["response_cost"] = 0.0
 
     assert logging_obj._response_cost_calculator(result=response) == 0.03
+
+
+def test_openrouter_logging_marks_missing_provider_cost_unresolved() -> None:
+    logging_obj = LitellmLogging(
+        model="google/lyria-3-clip-preview",
+        messages=[{"role": "user", "content": "Generate music"}],
+        stream=True,
+        call_type="completion",
+        litellm_call_id="openrouter-audio-call",
+        start_time=time.time(),
+        function_id="test-fn",
+    )
+    logging_obj.model_call_details["custom_llm_provider"] = "openrouter"
+    logging_obj.optional_params = {"modalities": ["text", "audio"]}
+    response = ModelResponse(
+        id="openrouter-audio",
+        model="google/lyria-3-clip-preview",
+        choices=[],
+        usage=Usage(prompt_tokens=22, completion_tokens=4, total_tokens=26),
+    )
+
+    assert logging_obj._response_cost_calculator(result=response) is None
+    assert logging_obj.model_call_details["provider_cost_unresolved"] == {
+        "provider": "openrouter",
+        "tracking_id": "openrouter-cost:openrouter-audio",
+        "model": "google/lyria-3-clip-preview",
+        "reason": "openrouter response omitted provider-reported cost",
+        "evidence": {"call_type": "completion"},
+        "metadata": {},
+    }
 
 
 def test_success_handler_unified_helper_runs_for_typed_results():

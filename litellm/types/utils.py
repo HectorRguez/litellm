@@ -2690,6 +2690,15 @@ class StandardLoggingModelCostFailureDebugInformation(TypedDict, total=False):
     custom_pricing: Optional[bool]
 
 
+class UnresolvedProviderCost(LiteLLMPydanticObjectBase):
+    provider: str = Field(min_length=1, max_length=64)
+    tracking_id: str = Field(min_length=1, max_length=256)
+    model: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=1024)
+    evidence: Dict[str, Union[str, int, float, bool, None]] = Field(default_factory=dict)
+    metadata: Dict[str, Union[str, int, float, bool, None]] = Field(default_factory=dict)
+
+
 class StandardLoggingPayloadErrorInformation(TypedDict, total=False):
     error_code: Optional[str]
     error_class: Optional[str]
