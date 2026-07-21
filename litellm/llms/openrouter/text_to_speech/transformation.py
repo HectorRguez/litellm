@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -30,6 +32,8 @@ _EMPTY_JSON_OBJECT: Mapping[str, JsonValue] = MappingProxyType(
     {}  # mutable-ok: MappingProxyType requires a dictionary source for an immutable empty mapping
 )
 _EXTRA_BODY_ADAPTER = TypeAdapter(Mapping[str, JsonValue])
+_GENERATION_STATS_MAX_POLLS = 15
+_GENERATION_STATS_POLL_INTERVAL_SECONDS = 2.0
 _RESPONSE_COST_HEADER = "llm_provider-x-litellm-response-cost"
 _SPEECH_ENDPOINT_SUFFIX = "/audio/speech"
 
@@ -104,6 +108,46 @@ def _parse_generation_stats(
             headers=response.headers,
         )
     return stats
+
+
+def _poll_generation_stats(
+    client: HTTPHandler,
+    generation_url: str,
+    generation_id: str,
+    headers: dict[str, str],
+) -> httpx.Response:
+    response: httpx.Response
+    for poll_index in range(_GENERATION_STATS_MAX_POLLS):
+        response = client.get(
+            url=generation_url,
+            headers=headers,
+            params={"id": generation_id},
+        )
+        if response.status_code != 404:
+            return response
+        if poll_index + 1 < _GENERATION_STATS_MAX_POLLS:
+            time.sleep(_GENERATION_STATS_POLL_INTERVAL_SECONDS)
+    return response
+
+
+async def _async_poll_generation_stats(
+    client: AsyncHTTPHandler,
+    generation_url: str,
+    generation_id: str,
+    headers: dict[str, str],
+) -> httpx.Response:
+    response: httpx.Response
+    for poll_index in range(_GENERATION_STATS_MAX_POLLS):
+        response = await client.get(
+            url=generation_url,
+            headers=headers,
+            params={"id": generation_id},
+        )
+        if response.status_code != 404:
+            return response
+        if poll_index + 1 < _GENERATION_STATS_MAX_POLLS:
+            await asyncio.sleep(_GENERATION_STATS_POLL_INTERVAL_SECONDS)
+    return response
 
 
 def _record_generation_cost(
@@ -231,10 +275,11 @@ class OpenRouterTextToSpeechConfig(BaseTextToSpeechConfig):
         client: HTTPHandler,
     ) -> HttpxBinaryResponseContent:
         generation_url, generation_id, headers = _generation_stats_request(raw_response)
-        stats_response = client.get(
-            url=generation_url,
+        stats_response = _poll_generation_stats(
+            client=client,
+            generation_url=generation_url,
+            generation_id=generation_id,
             headers=headers,
-            params={"id": generation_id},
         )
         return _record_generation_cost(
             result,
@@ -250,10 +295,11 @@ class OpenRouterTextToSpeechConfig(BaseTextToSpeechConfig):
         client: AsyncHTTPHandler,
     ) -> HttpxBinaryResponseContent:
         generation_url, generation_id, headers = _generation_stats_request(raw_response)
-        stats_response = await client.get(
-            url=generation_url,
+        stats_response = await _async_poll_generation_stats(
+            client=client,
+            generation_url=generation_url,
+            generation_id=generation_id,
             headers=headers,
-            params={"id": generation_id},
         )
         return _record_generation_cost(
             result,

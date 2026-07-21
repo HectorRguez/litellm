@@ -8,6 +8,7 @@ import pytest
 import litellm
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.openrouter.common_utils import OpenRouterException
+from litellm.llms.openrouter.text_to_speech import transformation
 from litellm.llms.openrouter.text_to_speech.transformation import (
     OpenRouterTextToSpeechConfig,
 )
@@ -129,6 +130,79 @@ def test_litellm_speech_uses_shared_handler_with_openai_compatible_defaults(
     assert extra_headers == original_extra_headers
 
 
+def test_litellm_speech_polls_until_generation_cost_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_requests: list[httpx.Request] = []
+    generation_requests = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal generation_requests
+        captured_requests.append(request)
+        if request.url.path.endswith("/generation"):
+            generation_requests += 1
+            if generation_requests < 3:
+                return httpx.Response(
+                    404,
+                    json={"error": {"message": f"Generation {_GENERATION_ID} not found"}},
+                )
+        return _openrouter_tts_response(request, b"sync-audio")
+
+    monkeypatch.setattr(transformation, "_GENERATION_STATS_POLL_INTERVAL_SECONDS", 0, raising=False)
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond)))
+
+    try:
+        response = litellm.speech(
+            model="openrouter/hexgrad/kokoro-82m",
+            input="hello",
+            voice="af_alloy",
+            api_key="test-key",
+            api_base="https://openrouter.test/api/v1",
+            client=client,
+        )
+    finally:
+        client.close()
+
+    assert response._hidden_params["response_cost"] == _PROVIDER_COST
+    assert generation_requests == 3
+    assert len(captured_requests) == 4
+
+
+def test_litellm_speech_stops_polling_when_generation_cost_remains_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        if request.url.path.endswith("/generation"):
+            return httpx.Response(
+                404,
+                json={"error": {"message": f"Generation {_GENERATION_ID} not found"}},
+            )
+        return _openrouter_tts_response(request, b"sync-audio")
+
+    monkeypatch.setattr(transformation, "_GENERATION_STATS_MAX_POLLS", 3, raising=False)
+    monkeypatch.setattr(transformation, "_GENERATION_STATS_POLL_INTERVAL_SECONDS", 0, raising=False)
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(respond)))
+
+    try:
+        with pytest.raises(OpenRouterException) as exc_info:
+            litellm.speech(
+                model="openrouter/hexgrad/kokoro-82m",
+                input="hello",
+                voice="af_alloy",
+                api_key="test-key",
+                api_base="https://openrouter.test/api/v1",
+                client=client,
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.status_code == 404
+    assert len(captured_requests) == 4
+
+
 def test_litellm_speech_merges_all_header_sources_without_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_requests: list[httpx.Request] = []
 
@@ -204,6 +278,47 @@ async def test_litellm_aspeech_uses_injected_async_transport() -> None:
         "speed": 2,
     }
     assert str(captured_requests[1].url) == (f"https://openrouter.test/api/v1/generation?id={_GENERATION_ID}")
+
+
+@pytest.mark.asyncio
+async def test_litellm_aspeech_polls_until_generation_cost_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_requests: list[httpx.Request] = []
+    generation_requests = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal generation_requests
+        captured_requests.append(request)
+        if request.url.path.endswith("/generation"):
+            generation_requests += 1
+            if generation_requests < 3:
+                return httpx.Response(
+                    404,
+                    json={"error": {"message": f"Generation {_GENERATION_ID} not found"}},
+                )
+        return _openrouter_tts_response(request, b"async-audio")
+
+    monkeypatch.setattr(transformation, "_GENERATION_STATS_POLL_INTERVAL_SECONDS", 0, raising=False)
+    client = AsyncHTTPHandler()
+    await client.close()
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+
+    try:
+        response = await litellm.aspeech(
+            model="openrouter/hexgrad/kokoro-82m",
+            input="hello async",
+            voice="af_heart",
+            api_key="test-key",
+            api_base="https://openrouter.test/api/v1",
+            client=client,
+        )
+    finally:
+        await client.close()
+
+    assert response._hidden_params["response_cost"] == _PROVIDER_COST
+    assert generation_requests == 3
+    assert len(captured_requests) == 4
 
 
 def test_litellm_speech_maps_openrouter_non_success_response() -> None:
