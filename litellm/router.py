@@ -223,6 +223,16 @@ from litellm.utils import (
 
 from .router_utils.pattern_match_deployments import PatternMatchRouter
 
+
+NON_GENERATING_VIDEO_CALL_TYPES: FrozenSet[str] = frozenset(
+    {
+        "avideo_content",
+        "avideo_status",
+        "video_content",
+        "video_status",
+    }
+)
+
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
@@ -4516,12 +4526,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        call_type=original_generic_function.__name__,
                     )
                     response = await response  # type: ignore
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    call_type=original_generic_function.__name__,
                 )
                 response = await response  # type: ignore
 
@@ -4628,7 +4642,10 @@ class Router:
             kwargs["model"] = model_name
 
             # Perform pre-call checks for routing strategy
-            self.routing_strategy_pre_call_checks(deployment=deployment)
+            self.routing_strategy_pre_call_checks(
+                deployment=deployment,
+                call_type=handler_name,
+            )
 
             try:
                 custom_llm_provider = data.get("custom_llm_provider")
@@ -7250,7 +7267,7 @@ class Router:
         healthy_deployments = self._filter_blocked_deployments(healthy_deployments)
         return healthy_deployments, _all_deployments
 
-    def routing_strategy_pre_call_checks(self, deployment: dict):
+    def routing_strategy_pre_call_checks(self, deployment: dict, call_type: Optional[str] = None):
         """
         Mimics 'async_routing_strategy_pre_call_checks'
 
@@ -7264,6 +7281,8 @@ class Router:
         """
         for _callback in litellm.callbacks:
             if isinstance(_callback, CustomLogger):
+                if call_type in NON_GENERATING_VIDEO_CALL_TYPES and isinstance(_callback, ModelRateLimitingCheck):
+                    continue
                 _callback.pre_call_check(deployment)
 
     async def async_routing_strategy_pre_call_checks(
@@ -7271,6 +7290,7 @@ class Router:
         deployment: dict,
         parent_otel_span: Optional[Span],
         logging_obj: Optional[LiteLLMLogging] = None,
+        call_type: Optional[str] = None,
     ):
         """
         For usage-based-routing-v2, enables running rpm checks before the call is made, inside the semaphore.
@@ -7285,6 +7305,8 @@ class Router:
         """
         for _callback in litellm.callbacks:
             if isinstance(_callback, CustomLogger):
+                if call_type in NON_GENERATING_VIDEO_CALL_TYPES and isinstance(_callback, ModelRateLimitingCheck):
+                    continue
                 try:
                     await _callback.async_pre_call_check(deployment, parent_otel_span)
                 except litellm.RateLimitError as e:

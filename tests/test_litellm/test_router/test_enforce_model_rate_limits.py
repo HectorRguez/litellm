@@ -316,6 +316,37 @@ class TestRouterWithEnforceModelRateLimits:
 
         assert found, "ModelRateLimitingCheck should be in litellm.callbacks"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call_type", ["avideo_status", "avideo_content"])
+    async def test_video_retrieval_does_not_consume_generation_rpm(
+        self, monkeypatch: pytest.MonkeyPatch, call_type: str
+    ):
+        router = Router(model_list=[])
+        check = ModelRateLimitingCheck(dual_cache=MagicMock())
+        check.async_pre_call_check = AsyncMock(return_value={})  # type: ignore[method-assign]
+        monkeypatch.setattr(litellm, "callbacks", [check])
+        deployment = {
+            "model_name": "video-model",
+            "litellm_params": {"model": "provider/video-model", "rpm": 3},
+            "model_info": {"id": "video-deployment"},
+        }
+
+        await router.async_routing_strategy_pre_call_checks(
+            deployment=deployment,
+            parent_otel_span=None,
+            call_type=call_type,
+        )
+
+        check.async_pre_call_check.assert_not_awaited()
+
+        await router.async_routing_strategy_pre_call_checks(
+            deployment=deployment,
+            parent_otel_span=None,
+            call_type="avideo_generation",
+        )
+
+        check.async_pre_call_check.assert_awaited_once_with(deployment, None)
+
 
 class TestModelRateLimitConcurrency:
     """Test that RPM rate limiting is atomic under concurrent requests."""
