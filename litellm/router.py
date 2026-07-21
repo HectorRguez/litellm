@@ -225,7 +225,7 @@ from litellm.utils import (
 from .router_utils.pattern_match_deployments import PatternMatchRouter
 
 
-NON_GENERATING_VIDEO_CALL_TYPES: FrozenSet[str] = frozenset(
+NON_GENERATING_VIDEO_CALL_TYPES: frozenset[str] = frozenset(
     {
         "avideo_content",
         "avideo_status",
@@ -7268,7 +7268,7 @@ class Router:
         healthy_deployments = self._filter_blocked_deployments(healthy_deployments)
         return healthy_deployments, _all_deployments
 
-    def routing_strategy_pre_call_checks(self, deployment: dict, call_type: Optional[str] = None):
+    def routing_strategy_pre_call_checks(self, deployment: dict, call_type: str | None = None):
         """
         Mimics 'async_routing_strategy_pre_call_checks'
 
@@ -7291,7 +7291,7 @@ class Router:
         deployment: dict,
         parent_otel_span: Optional[Span],
         logging_obj: Optional[LiteLLMLogging] = None,
-        call_type: Optional[str] = None,
+        call_type: str | None = None,
     ):
         """
         For usage-based-routing-v2, enables running rpm checks before the call is made, inside the semaphore.
