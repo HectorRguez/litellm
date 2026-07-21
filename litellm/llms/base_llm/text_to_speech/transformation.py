@@ -6,6 +6,10 @@ import httpx
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.llms.custom_httpx.http_handler import (
+        AsyncHTTPHandler as _AsyncHTTPHandler,
+    )
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler as _HTTPHandler
     from litellm.types.llms.openai import (
         HttpxBinaryResponseContent as _HttpxBinaryResponseContent,
     )
@@ -15,10 +19,14 @@ if TYPE_CHECKING:
     LiteLLMLoggingObj = _LiteLLMLoggingObj
     BaseLLMException = _BaseLLMException
     HttpxBinaryResponseContent = _HttpxBinaryResponseContent
+    HTTPHandler = _HTTPHandler
+    AsyncHTTPHandler = _AsyncHTTPHandler
 else:
     LiteLLMLoggingObj = Any
     BaseLLMException = Any
     HttpxBinaryResponseContent = Any
+    HTTPHandler = Any
+    AsyncHTTPHandler = Any
 
 
 class TextToSpeechRequestData(TypedDict, total=False):
@@ -136,6 +144,24 @@ class BaseTextToSpeechConfig(ABC):
         Transform provider response to standard format
         """
         pass
+
+    def resolve_text_to_speech_provider_cost(
+        self,
+        result: "HttpxBinaryResponseContent",
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        client: HTTPHandler,
+    ) -> "HttpxBinaryResponseContent":
+        return result
+
+    async def async_resolve_text_to_speech_provider_cost(
+        self,
+        result: "HttpxBinaryResponseContent",
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        client: AsyncHTTPHandler,
+    ) -> "HttpxBinaryResponseContent":
+        return result
 
     def get_error_class(self, error_message: str, status_code: int, headers: Dict) -> BaseLLMException:
         from ..chat.transformation import BaseLLMException

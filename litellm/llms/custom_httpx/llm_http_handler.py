@@ -11426,10 +11426,16 @@ class BaseLLMHTTPHandler:
                 provider_config=text_to_speech_provider_config,
             )
 
-        return text_to_speech_provider_config.transform_text_to_speech_response(
+        transformed_response = text_to_speech_provider_config.transform_text_to_speech_response(
             model=model,
             raw_response=response,
             logging_obj=logging_obj,
+        )
+        return text_to_speech_provider_config.resolve_text_to_speech_provider_cost(
+            result=transformed_response,
+            raw_response=response,
+            logging_obj=logging_obj,
+            client=sync_httpx_client,
         )
 
     async def async_text_to_speech_handler(
@@ -11525,10 +11531,16 @@ class BaseLLMHTTPHandler:
                 provider_config=text_to_speech_provider_config,
             )
 
-        return text_to_speech_provider_config.transform_text_to_speech_response(
+        transformed_response = text_to_speech_provider_config.transform_text_to_speech_response(
             model=model,
             raw_response=response,
             logging_obj=logging_obj,
+        )
+        return await text_to_speech_provider_config.async_resolve_text_to_speech_provider_cost(
+            result=transformed_response,
+            raw_response=response,
+            logging_obj=logging_obj,
+            client=async_httpx_client,
         )
 
     #########################################################

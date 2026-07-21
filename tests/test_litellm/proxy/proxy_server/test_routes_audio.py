@@ -17,6 +17,8 @@ import pytest
 
 from litellm.proxy import proxy_server
 
+_GENERATION_ID = "gen-tts-test-123"
+
 
 @pytest.fixture
 def patched_speech(monkeypatch):
@@ -38,7 +40,10 @@ def patched_speech(monkeypatch):
     monkeypatch.setattr(proxy_server, "add_litellm_data_to_request", _add_data)
 
     class _FakeBinaryResp:
-        response = httpx.Response(200)
+        response = httpx.Response(
+            200,
+            headers={"X-Generation-Id": _GENERATION_ID},
+        )
 
         async def aiter_bytes(self, chunk_size: int = 8192):
             async def _gen():
@@ -171,11 +176,13 @@ def test_audio_speech_happy_path(client, auth_as, patched_speech, path):
     response_summary = {
         "status_code": response.status_code,
         "content_type": response.headers.get("content-type", ""),
+        "generation_id": response.headers.get("x-generation-id"),
         "body_bytes": response.content,
     }
     assert response_summary == {
         "status_code": 200,
         "content_type": "audio/mpeg",
+        "generation_id": _GENERATION_ID,
         "body_bytes": b"\x00\x01\x02",
     }
 

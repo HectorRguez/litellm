@@ -9493,6 +9493,10 @@ async def audio_speech(
         if callback_headers:
             custom_headers.update(callback_headers)
 
+        provider_generation_id = response.response.headers.get("x-generation-id")
+        if provider_generation_id:
+            custom_headers["x-generation-id"] = provider_generation_id
+
         media_type = _audio_speech_media_type(response, data.get("model", ""))
 
         return StreamingResponse(
