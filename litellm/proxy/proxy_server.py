@@ -9385,6 +9385,20 @@ async def _audio_speech_chunk_generator(
         yield chunk
 
 
+def _audio_speech_media_type(
+    response: HttpxBinaryResponseContent,
+    request_model: str,
+) -> str:
+    provider_content_type = response.response.headers.get("content-type")
+    if provider_content_type:
+        return provider_content_type.partition(";")[0].strip()
+
+    request_model_lower = request_model.lower()
+    if "gemini" in request_model_lower and ("tts" in request_model_lower or "preview-tts" in request_model_lower):
+        return "audio/wav"
+    return "audio/mpeg"
+
+
 @router.post(
     "/v1/audio/speech",
     dependencies=[Depends(user_api_key_auth)],
@@ -9479,15 +9493,7 @@ async def audio_speech(
         if callback_headers:
             custom_headers.update(callback_headers)
 
-        # Determine media type based on model type
-        media_type = "audio/mpeg"  # Default for OpenAI TTS
-        request_model = data.get("model", "")
-        if request_model:
-            request_model_lower = request_model.lower()
-            if "gemini" in request_model_lower and (
-                "tts" in request_model_lower or "preview-tts" in request_model_lower
-            ):
-                media_type = "audio/wav"  # Gemini TTS returns WAV format after conversion
+        media_type = _audio_speech_media_type(response, data.get("model", ""))
 
         return StreamingResponse(
             _audio_speech_chunk_generator(response),  # type: ignore[arg-type]
