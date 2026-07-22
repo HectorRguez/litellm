@@ -12,9 +12,12 @@ from __future__ import annotations
 import io
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from litellm.proxy import proxy_server
+
+_GENERATION_ID = "gen-tts-test-123"
 
 
 @pytest.fixture
@@ -37,6 +40,11 @@ def patched_speech(monkeypatch):
     monkeypatch.setattr(proxy_server, "add_litellm_data_to_request", _add_data)
 
     class _FakeBinaryResp:
+        response = httpx.Response(
+            200,
+            headers={"X-Generation-Id": _GENERATION_ID},
+        )
+
         async def aiter_bytes(self, chunk_size: int = 8192):
             async def _gen():
                 yield b"\x00\x01\x02"
@@ -51,6 +59,33 @@ def patched_speech(monkeypatch):
 
     monkeypatch.setattr(proxy_server, "route_request", _fake_route_request)
     yield
+
+
+def test_audio_speech_media_type_preserves_provider_content_type() -> None:
+    response = proxy_server.HttpxBinaryResponseContent(
+        httpx.Response(200, headers={"content-type": "audio/pcm; rate=24000"})
+    )
+
+    assert (
+        proxy_server._audio_speech_media_type(
+            response,
+            "google/gemini-3.1-flash-tts-preview",
+        )
+        == "audio/pcm"
+    )
+
+
+def test_audio_speech_media_type_falls_back_for_headerless_responses() -> None:
+    response = proxy_server.HttpxBinaryResponseContent(httpx.Response(200))
+
+    assert proxy_server._audio_speech_media_type(response, "tts-1") == "audio/mpeg"
+    assert (
+        proxy_server._audio_speech_media_type(
+            response,
+            "google/gemini-3.1-flash-tts-preview",
+        )
+        == "audio/wav"
+    )
 
 
 @pytest.fixture
@@ -99,9 +134,7 @@ def patched_transcription(monkeypatch):
         return data
 
     monkeypatch.setattr(proxy_server, "add_litellm_data_to_request", _add_data)
-    monkeypatch.setattr(
-        proxy_server, "check_file_size_under_limit", lambda **kwargs: True
-    )
+    monkeypatch.setattr(proxy_server, "check_file_size_under_limit", lambda **kwargs: True)
 
     async def _form_data(request):
         from starlette.datastructures import FormData, UploadFile
@@ -143,11 +176,13 @@ def test_audio_speech_happy_path(client, auth_as, patched_speech, path):
     response_summary = {
         "status_code": response.status_code,
         "content_type": response.headers.get("content-type", ""),
+        "generation_id": response.headers.get("x-generation-id"),
         "body_bytes": response.content,
     }
     assert response_summary == {
         "status_code": 200,
         "content_type": "audio/mpeg",
+        "generation_id": _GENERATION_ID,
         "body_bytes": b"\x00\x01\x02",
     }
 

@@ -76,11 +76,31 @@ class _OpenRouterTranscriptionUsage(BaseModel):
     cost: float
 
 
+class _OpenRouterTranscriptionWord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    word: str
+    start: float
+    end: float
+
+
 class _OpenRouterTranscriptionResponse(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     text: str
     usage: _OpenRouterTranscriptionUsage
+    words: tuple[_OpenRouterTranscriptionWord, ...] | None = None
+
+
+def _normalize_transcription_word(
+    words: tuple[_OpenRouterTranscriptionWord, ...], index: int
+) -> dict[str, JsonValue] | None:
+    word = words[index]
+    next_start = words[index + 1].start if index + 1 < len(words) else None
+    normalized_end = word.end if word.end > word.start else next_start
+    if normalized_end is None or normalized_end <= word.start:
+        return None
+    return {"word": word.word, "start": word.start, "end": normalized_end}
 
 
 class OpenRouterAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
@@ -223,8 +243,14 @@ class OpenRouterAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
         response = TranscriptionResponse(text=provider_response.text)
         response.usage = normalized_usage
         for key, value in provider_fields.items():
-            if key not in ("text", "usage"):
+            if key not in ("text", "usage", "words"):
                 response[key] = value
+        if provider_response.words is not None:
+            response["words"] = tuple(
+                normalized_word
+                for index in range(len(provider_response.words))
+                if (normalized_word := _normalize_transcription_word(provider_response.words, index)) is not None
+            )
         duration_hidden_params = (
             {}
             if provider_response.usage.seconds is None

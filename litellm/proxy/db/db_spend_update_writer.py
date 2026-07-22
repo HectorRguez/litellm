@@ -27,7 +27,7 @@ from typing import (
 
 import litellm
 from litellm._logging import verbose_proxy_logger
-from litellm.caching import RedisCache
+from litellm.caching import DualCache, RedisCache
 from litellm.constants import (
     DB_SPEND_UPDATE_JOB_NAME,
     DB_DAILY_TAG_SPEND_UPDATE_JOB_NAME,
@@ -48,6 +48,7 @@ from litellm.proxy._types import (
     SpendLogsPayload,
     SpendUpdateQueueItem,
     ToolDiscoveryQueueItem,
+    UnresolvedProviderCost,
 )
 from litellm.proxy.db.db_transaction_queue.daily_spend_update_queue import (
     DailySpendUpdateQueue,
@@ -70,6 +71,16 @@ if TYPE_CHECKING:
 else:
     PrismaClient = Any
     ProxyLogging = Any
+
+
+_PROVIDER_COST_TRACKING_PREFIXES = (
+    "fal-video-cost:",
+    "openrouter-video-cost:",
+)
+
+
+def _is_provider_cost_tracking_request_id(request_id: Any) -> bool:
+    return isinstance(request_id, str) and request_id.startswith(_PROVIDER_COST_TRACKING_PREFIXES)
 
 
 def _extract_cache_read_tokens(usage_obj: dict) -> int:
@@ -140,6 +151,7 @@ class DBSpendUpdateWriter:
             disable_spend_logs,
             litellm_proxy_budget_name,
             prisma_client,
+            user_api_key_cache,
         )
         from litellm.proxy.utils import ProxyUpdateSpend, hash_token
 
@@ -177,6 +189,32 @@ class DBSpendUpdateWriter:
             if team_id is not None and team_id != "":
                 payload["team_id"] = team_id
 
+            if (
+                disable_spend_logs is False
+                and prisma_client is not None
+                and _is_provider_cost_tracking_request_id(payload.get("request_id"))
+            ):
+                created = await self.report_external_spend(
+                    payload=payload,
+                    response_cost=float(response_cost or 0.0),
+                    user_id=user_id,
+                    hashed_token=hashed_token,
+                    team_id=team_id,
+                    org_id=org_id,
+                    end_user_id=end_user_id,
+                    prisma_client=prisma_client,
+                    user_api_key_cache=user_api_key_cache,
+                    litellm_proxy_budget_name=litellm_proxy_budget_name,
+                )
+                if created:
+                    self._enqueue_tool_registry_upsert(
+                        kwargs=kwargs,
+                        completion_response=completion_response,
+                        hashed_token=hashed_token,
+                        team_id=team_id,
+                    )
+                return created
+
             if disable_spend_logs is False:
                 await self._insert_spend_log_to_db(
                     payload=payload,
@@ -210,6 +248,7 @@ class DBSpendUpdateWriter:
             )
 
             verbose_proxy_logger.debug("Runs spend update on all tables")
+            return True
         except Exception:
             spend_log_error(
                 "Spend tracking - update_database failed. Spend log insertion or daily transaction enqueue "
@@ -222,6 +261,93 @@ class DBSpendUpdateWriter:
                 org_id,
                 end_user_id,
             )
+            return None
+
+    async def report_external_spend(
+        self,
+        *,
+        payload: SpendLogsPayload,
+        response_cost: float,
+        user_id: str | None,
+        hashed_token: str | None,
+        team_id: str | None,
+        org_id: str | None,
+        end_user_id: str | None,
+        prisma_client: PrismaClient,
+        user_api_key_cache: DualCache,
+        litellm_proxy_budget_name: str | None,
+    ) -> bool:
+        from litellm.repositories.table_repositories import SpendLogsRepository
+
+        db_payload = prisma_client.jsonify_object({**payload})
+        result = await SpendLogsRepository(prisma_client).table.create_many(
+            data=[db_payload],
+            skip_duplicates=True,
+        )
+        created_count = result if isinstance(result, int) else result.count
+        if created_count == 0:
+            return False
+
+        await self._batch_database_updates(
+            response_cost=response_cost,
+            user_id=user_id,
+            hashed_token=hashed_token,
+            team_id=team_id,
+            org_id=org_id,
+            end_user_id=end_user_id,
+            prisma_client=prisma_client,
+            litellm_proxy_budget_name=litellm_proxy_budget_name,
+            payload=payload,
+        )
+        return True
+
+    async def report_unresolved_provider_cost(
+        self,
+        *,
+        unresolved_cost: UnresolvedProviderCost,
+        start_time: datetime,
+        end_time: datetime,
+        request_tags: list[str],
+        end_user_id: str | None,
+        user_id: str | None,
+        team_id: str | None,
+        org_id: str | None,
+        api_base: str,
+        prisma_client: PrismaClient,
+    ) -> bool:
+        from litellm.models import LiteLLM_ErrorLogs
+        from litellm.repositories.table_repositories import ErrorLogsRepository
+
+        error_log = LiteLLM_ErrorLogs(
+            request_id=f"unresolved-cost:{unresolved_cost.tracking_id}",
+            startTime=start_time,
+            endTime=end_time,
+            api_base=api_base,
+            model_group=unresolved_cost.model,
+            litellm_model_name=unresolved_cost.model,
+            request_kwargs={
+                "provider": unresolved_cost.provider,
+                "provider_tracking_id": unresolved_cost.tracking_id,
+                "reason": unresolved_cost.reason,
+                "evidence": unresolved_cost.evidence,
+                "metadata": unresolved_cost.metadata,
+                "tags": request_tags,
+                "end_user": end_user_id,
+                "user_id": user_id,
+                "team_id": team_id,
+                "organization_id": org_id,
+            },
+            exception_type="UnresolvedProviderCost",
+            exception_string=unresolved_cost.reason,
+            status_code="cost_unresolved",
+        )
+        db_payload = prisma_client.jsonify_object(error_log.model_dump(exclude_none=True))
+        result = await ErrorLogsRepository(prisma_client).table.create_many(
+            data=[db_payload],
+            skip_duplicates=True,
+        )
+        created_count = result if isinstance(result, int) else result.count
+        return created_count > 0
 
     def _enqueue_tool_registry_upsert(
         self,

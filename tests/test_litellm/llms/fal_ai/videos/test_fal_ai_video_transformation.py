@@ -1,8 +1,9 @@
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 
+import litellm
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
 from litellm.types.router import GenericLiteLLMParams
@@ -11,17 +12,32 @@ from litellm.types.videos.utils import decode_video_id_with_provider, encode_vid
 from litellm.utils import ProviderConfigManager
 
 
-def _json_response(data: object, status_code: int = 200) -> httpx.Response:
+def _json_response(
+    data: object,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+    request_headers: dict[str, str] | None = None,
+) -> httpx.Response:
     return httpx.Response(
         status_code=status_code,
         json=data,
-        request=httpx.Request("GET", "https://queue.fal.run/fal-ai/veo3/requests/request-123"),
+        headers=headers,
+        request=httpx.Request(
+            "GET",
+            "https://queue.fal.run/fal-ai/veo3/requests/request-123",
+            headers=request_headers,
+        ),
     )
 
 
 @pytest.fixture
 def config() -> FalAIVideoConfig:
     return FalAIVideoConfig()
+
+
+@pytest.fixture(autouse=True)
+def clear_pricing_cache() -> None:
+    litellm.in_memory_llm_clients_cache.flush_cache()
 
 
 def test_provider_config_manager_registers_fal_video_config() -> None:
@@ -156,6 +172,13 @@ def test_maps_queue_status_and_keeps_downloadable_id(
     error: str | None,
     litellm_status: str,
 ) -> None:
+    original_video_id = encode_video_id_with_provider(
+        "request-123",
+        "fal_ai",
+        "fal-ai/heygen/avatar5/digital-twin",
+    )
+    logging_obj = Mock()
+    logging_obj.optional_params = {"video_id": original_video_id}
     video = config.transform_video_status_retrieve_response(
         raw_response=_json_response(
             {
@@ -165,14 +188,14 @@ def test_maps_queue_status_and_keeps_downloadable_id(
                 "error": error,
             }
         ),
-        logging_obj=Mock(),
+        logging_obj=logging_obj,
         custom_llm_provider="fal_ai",
     )
 
     assert video.status == litellm_status
     assert decode_video_id_with_provider(video.id) == {
         "custom_llm_provider": "fal_ai",
-        "model_id": "fal-ai/heygen",
+        "model_id": "fal-ai/heygen/avatar5/digital-twin",
         "video_id": "request-123",
     }
     assert video.error == ({"message": error} if error is not None else None)
@@ -197,12 +220,116 @@ def test_content_response_downloads_video() -> None:
         )
 
     config = FalAIVideoConfig(sync_media_fetcher=media_fetcher)
+    logging_obj = Mock(
+        optional_params={},
+        model_call_details={
+            "model": "fal_ai/fal-ai/test-video",
+            "litellm_call_id": "content-call-1",
+        },
+    )
     content = config.transform_video_content_response(
         raw_response=_json_response({"video": {"url": "https://v3.fal.media/files/video.mp4"}}),
-        logging_obj=Mock(),
+        logging_obj=logging_obj,
     )
 
     assert content == b"video-bytes"
+    assert logging_obj.model_call_details["provider_cost_authoritative"] is True
+    assert logging_obj.model_call_details["provider_cost_unresolved"]["tracking_id"] == "content-call-1"
+
+
+def test_content_response_tracks_provider_reported_cost_and_caches_pricing() -> None:
+    media_fetcher = Mock(
+        return_value=httpx.Response(
+            200,
+            content=b"video-bytes",
+            request=httpx.Request("GET", "https://v3.fal.media/files/video.mp4"),
+        )
+    )
+    pricing_fetcher = Mock(
+        return_value=_json_response(
+            {
+                "prices": [
+                    {
+                        "endpoint_id": "fal-ai/heygen/avatar5/digital-twin",
+                        "unit_price": 0.1,
+                        "unit": "seconds",
+                        "currency": "USD",
+                    }
+                ]
+            }
+        )
+    )
+    config = FalAIVideoConfig(
+        sync_media_fetcher=media_fetcher,
+        sync_pricing_fetcher=pricing_fetcher,
+    )
+    video_id = encode_video_id_with_provider(
+        "request-123",
+        "fal_ai",
+        "fal-ai/heygen/avatar5/digital-twin",
+    )
+    logging_obj = Mock()
+    logging_obj.optional_params = {"video_id": video_id}
+    logging_obj.model_call_details = {}
+    raw_response = _json_response(
+        {"video": {"url": "https://v3.fal.media/files/video.mp4"}},
+        headers={"x-fal-billable-units": "21"},
+        request_headers={"Authorization": "Key test-key"},
+    )
+
+    first_content = config.transform_video_content_response(raw_response, logging_obj)
+    second_content = config.transform_video_content_response(raw_response, logging_obj)
+
+    assert first_content == second_content == b"video-bytes"
+    assert logging_obj.model_call_details["response_cost"] == pytest.approx(2.1)
+    assert logging_obj.model_call_details["provider_cost_tracking_id"] == "fal-video-cost:request-123"
+    pricing_fetcher.assert_called_once_with(
+        "fal-ai/heygen/avatar5/digital-twin",
+        "Key test-key",
+    )
+
+
+def test_content_response_does_not_fail_when_pricing_is_unavailable() -> None:
+    media_fetcher = Mock(
+        return_value=httpx.Response(
+            200,
+            content=b"video-bytes",
+            request=httpx.Request("GET", "https://v3.fal.media/files/video.mp4"),
+        )
+    )
+    pricing_fetcher = Mock(side_effect=httpx.ConnectError("pricing unavailable"))
+    config = FalAIVideoConfig(
+        sync_media_fetcher=media_fetcher,
+        sync_pricing_fetcher=pricing_fetcher,
+    )
+    logging_obj = Mock()
+    logging_obj.optional_params = {
+        "video_id": encode_video_id_with_provider("request-123", "fal_ai", "fal-ai/heygen/avatar5/digital-twin")
+    }
+    logging_obj.model_call_details = {}
+
+    content = config.transform_video_content_response(
+        _json_response(
+            {"video": {"url": "https://v3.fal.media/files/video.mp4"}},
+            headers={"x-fal-billable-units": "21"},
+            request_headers={"Authorization": "Key test-key"},
+        ),
+        logging_obj,
+    )
+
+    assert content == b"video-bytes"
+    assert "response_cost" not in logging_obj.model_call_details
+    assert logging_obj.model_call_details["provider_cost_unresolved"] == {
+        "provider": "fal",
+        "tracking_id": "fal-video-cost:request-123",
+        "model": "fal-ai/heygen/avatar5/digital-twin",
+        "reason": "ConnectError: pricing unavailable",
+        "evidence": {
+            "pricing_source": "https://api.fal.ai/v1/models/pricing",
+            "billable_units": "21",
+        },
+        "metadata": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -216,12 +343,70 @@ async def test_async_content_response_downloads_video() -> None:
         )
 
     config = FalAIVideoConfig(async_media_fetcher=media_fetcher)
+    logging_obj = Mock(
+        optional_params={},
+        model_call_details={
+            "model": "fal_ai/fal-ai/test-video",
+            "litellm_call_id": "async-content-call-1",
+        },
+    )
     content = await config.async_transform_video_content_response(
         raw_response=_json_response({"video": {"url": "https://v3.fal.media/files/video.mp4"}}),
-        logging_obj=Mock(),
+        logging_obj=logging_obj,
     )
 
     assert content == b"async-video-bytes"
+    assert logging_obj.model_call_details["provider_cost_unresolved"]["tracking_id"] == "async-content-call-1"
+
+
+@pytest.mark.asyncio
+async def test_async_content_response_tracks_provider_reported_cost() -> None:
+    async_media_fetcher = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            content=b"async-video-bytes",
+            request=httpx.Request("GET", "https://v3.fal.media/files/video.mp4"),
+        )
+    )
+    async_pricing_fetcher = AsyncMock(
+        return_value=_json_response(
+            {
+                "prices": [
+                    {
+                        "endpoint_id": "fal-ai/heygen/avatar5/digital-twin",
+                        "unit_price": 0.1,
+                        "unit": "seconds",
+                        "currency": "USD",
+                    }
+                ]
+            }
+        )
+    )
+    config = FalAIVideoConfig(
+        async_media_fetcher=async_media_fetcher,
+        async_pricing_fetcher=async_pricing_fetcher,
+    )
+    logging_obj = Mock()
+    logging_obj.optional_params = {
+        "video_id": encode_video_id_with_provider("request-123", "fal_ai", "fal-ai/heygen/avatar5/digital-twin")
+    }
+    logging_obj.model_call_details = {}
+
+    content = await config.async_transform_video_content_response(
+        _json_response(
+            {"video": {"url": "https://v3.fal.media/files/video.mp4"}},
+            headers={"x-fal-billable-units": "21"},
+            request_headers={"Authorization": "Key test-key"},
+        ),
+        logging_obj,
+    )
+
+    assert content == b"async-video-bytes"
+    assert logging_obj.model_call_details["response_cost"] == pytest.approx(2.1)
+    async_pricing_fetcher.assert_awaited_once_with(
+        "fal-ai/heygen/avatar5/digital-twin",
+        "Key test-key",
+    )
 
 
 def test_provider_errors_preserve_status(config: FalAIVideoConfig) -> None:

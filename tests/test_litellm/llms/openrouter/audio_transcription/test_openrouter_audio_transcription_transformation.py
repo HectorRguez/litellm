@@ -282,6 +282,34 @@ class TestOpenRouterAudioTranscriptionConfig:
         assert response._hidden_params["text"] == response.text
         _assert_normalized_usage(response)
 
+    def test_transform_audio_transcription_response_repairs_zero_duration_word_timing(
+        self,
+        openrouter_stt_response: Mapping[str, object],
+    ) -> None:
+        provider_response = {
+            **openrouter_stt_response,
+            "words": [
+                {"word": "paso", "start": 2.0, "end": 2.94},
+                {"word": "paso", "start": 2.94, "end": 2.94},
+                {"word": "siguiente", "start": 3.6, "end": 4.1},
+                {"word": "final", "start": 4.1, "end": 4.1},
+            ],
+        }
+        raw_response = httpx.Response(
+            200,
+            json=provider_response,
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/audio/transcriptions"),
+        )
+
+        response = self.config.transform_audio_transcription_response(raw_response)
+
+        assert response["words"] == (
+            {"word": "paso", "start": 2.0, "end": 2.94},
+            {"word": "paso", "start": 2.94, "end": 3.6},
+            {"word": "siguiente", "start": 3.6, "end": 4.1},
+        )
+        assert response._hidden_params["words"] == provider_response["words"]
+
     @pytest.mark.parametrize(
         ("provider_usage", "expected_usage_type"),
         [

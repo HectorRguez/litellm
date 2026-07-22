@@ -31,6 +31,7 @@ from litellm.types.utils import (
     CallTypes,
     StandardLoggingPayload,
     StandardLoggingPayloadErrorInformation,
+    UnresolvedProviderCost,
 )
 from litellm.utils import get_end_user_id_for_cost_tracking
 
@@ -186,6 +187,7 @@ class _ProxyDBLogger(CustomLogger):
     ):
         from litellm.proxy.proxy_server import (
             increment_spend_counters,
+            prisma_client,
             proxy_logging_obj,
             update_cache,
         )
@@ -237,7 +239,7 @@ class _ProxyDBLogger(CustomLogger):
                     call_type=call_type,
                 ):
                     ## UPDATE DATABASE
-                    await _update_database_and_spend_counters(
+                    spend_recorded = await _update_database_and_spend_counters(
                         proxy_logging_obj=proxy_logging_obj,
                         increment_spend_counters=increment_spend_counters,
                         user_api_key=user_api_key,
@@ -254,31 +256,59 @@ class _ProxyDBLogger(CustomLogger):
                         request_tags=tags,
                     )
 
-                    # update cache (fire-and-forget for backward compat:
-                    # cached object fields, soft budget alerts, etc.)
-                    asyncio.create_task(
-                        update_cache(
+                    if spend_recorded:
+                        # update cache (fire-and-forget for backward compat:
+                        # cached object fields, soft budget alerts, etc.)
+                        asyncio.create_task(
+                            update_cache(
+                                token=user_api_key,
+                                user_id=user_id,
+                                end_user_id=end_user_id,
+                                response_cost=response_cost,
+                                team_id=team_id,
+                                parent_otel_span=parent_otel_span,
+                                tags=tags,
+                            )
+                        )
+
+                        await proxy_logging_obj.slack_alerting_instance.customer_spend_alert(
                             token=user_api_key,
-                            user_id=user_id,
+                            key_alias=key_alias,
                             end_user_id=end_user_id,
                             response_cost=response_cost,
-                            team_id=team_id,
-                            parent_otel_span=parent_otel_span,
-                            tags=tags,
+                            max_budget=end_user_max_budget,
                         )
-                    )
-
-                    await proxy_logging_obj.slack_alerting_instance.customer_spend_alert(
-                        token=user_api_key,
-                        key_alias=key_alias,
-                        end_user_id=end_user_id,
-                        response_cost=response_cost,
-                        max_budget=end_user_max_budget,
-                    )
                 elif budget_reservation is not None:
                     await _release_budget_reservation(budget_reservation=budget_reservation)
             else:
                 await _release_budget_reservation(budget_reservation=budget_reservation)
+                unresolved_payload = kwargs.get("provider_cost_unresolved")
+                if unresolved_payload is not None:
+                    if prisma_client is None:
+                        raise RuntimeError("Database is not connected; unresolved provider cost could not be recorded")
+                    unresolved_cost = UnresolvedProviderCost.model_validate(unresolved_payload)
+                    created = await proxy_logging_obj.db_spend_update_writer.report_unresolved_provider_cost(
+                        unresolved_cost=unresolved_cost,
+                        start_time=start_time if isinstance(start_time, datetime) else datetime.now(),
+                        end_time=end_time if isinstance(end_time, datetime) else datetime.now(),
+                        request_tags=tags,
+                        end_user_id=end_user_id,
+                        user_id=user_id,
+                        team_id=team_id,
+                        org_id=org_id,
+                        api_base=str(kwargs.get("api_base") or ""),
+                        prisma_client=prisma_client,
+                    )
+                    if created:
+                        error_msg = (
+                            f"Provider cost unresolved for {unresolved_cost.tracking_id}: {unresolved_cost.reason}"
+                        )
+                        await proxy_logging_obj.failed_tracking_alert(
+                            error_message=error_msg,
+                            failing_model=unresolved_cost.model,
+                        )
+                        verbose_proxy_logger.error(error_msg)
+                    return
                 # Non-model call types (health checks, afile_delete) have no model or standard_logging_object.
                 # Use .get() for "stream" to avoid KeyError on health checks.
                 # WS session wrappers (_aresponses_websocket, _arealtime) also reach here with
@@ -488,9 +518,9 @@ async def _update_database_and_spend_counters(
     response_cost: float,
     budget_reservation: Optional[dict],
     request_tags: Optional[List[str]] = None,
-) -> None:
+) -> bool:
     try:
-        await proxy_logging_obj.db_spend_update_writer.update_database(
+        spend_recorded = await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key,
             response_cost=response_cost,
             user_id=user_id,
@@ -516,6 +546,10 @@ async def _update_database_and_spend_counters(
                     )
         raise
 
+    if spend_recorded is False:
+        await _release_budget_reservation(budget_reservation=budget_reservation)
+        return False
+
     try:
         await increment_spend_counters(
             token=user_api_key,
@@ -538,6 +572,8 @@ async def _update_database_and_spend_counters(
             finally:
                 budget_reservation["finalized"] = True
         raise
+
+    return True
 
 
 async def _release_budget_reservation(budget_reservation: Optional[dict]) -> None:

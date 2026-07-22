@@ -54,6 +54,7 @@ from litellm.constants import (
 )
 from litellm.cost_calculator import (
     RealtimeAPITokenUsageProcessor,
+    _requires_provider_reported_cost,
     _select_model_name_for_cost_calc,
 )
 from litellm.integrations.agentops import AgentOps
@@ -129,6 +130,7 @@ from litellm.types.utils import (
     StandardLoggingVectorStoreRequest,
     TextCompletionResponse,
     TranscriptionResponse,
+    UnresolvedProviderCost,
     Usage,
 )
 from litellm.types.videos.main import VideoObject
@@ -1393,11 +1395,10 @@ class Logging(LiteLLMLoggingBaseClass):
 
         if isinstance(result, BaseModel) and hasattr(result, "_hidden_params"):
             hidden_params = getattr(result, "_hidden_params", {})
-            if (
-                "response_cost" in hidden_params and hidden_params["response_cost"] is not None
-            ):  # use cost if already calculated
-                return hidden_params["response_cost"]
-            elif router_model_id is None and "model_id" in hidden_params:  # use model_id if not already set
+            hidden_response_cost = hidden_params.get("response_cost")
+            if hidden_response_cost is not None and self.model_call_details.get("custom_llm_provider") != "openrouter":
+                return hidden_response_cost
+            if router_model_id is None and "model_id" in hidden_params:
                 router_model_id = hidden_params["model_id"]
 
         # Fallback: extract router_model_id from litellm_params when not available
@@ -1453,6 +1454,14 @@ class Logging(LiteLLMLoggingBaseClass):
             response_cost = litellm.response_cost_calculator(**response_cost_calculator_kwargs)
 
             verbose_logger.debug(f"response_cost: {response_cost}")
+            provider_cost_authoritative = _requires_provider_reported_cost(
+                custom_llm_provider=response_cost_calculator_kwargs["custom_llm_provider"],
+                litellm_logging_obj=self,
+            )
+            if provider_cost_authoritative:
+                if response_cost is None:
+                    self._record_unresolved_provider_cost(result)
+                return response_cost
             additional_response_cost: object = self.model_call_details.get("additional_response_cost")
             if isinstance(additional_response_cost, (int, float)) and additional_response_cost > 0:
                 return (response_cost or 0.0) + additional_response_cost
@@ -1472,6 +1481,35 @@ class Logging(LiteLLMLoggingBaseClass):
             self.model_call_details["response_cost_failure_debug_information"] = debug_info
 
         return None
+
+    def _record_unresolved_provider_cost(self, result: object) -> None:
+        if self.model_call_details.get("provider_cost_unresolved") is not None:
+            return
+        provider = self.model_call_details.get("custom_llm_provider")
+        normalized_provider = provider if isinstance(provider, str) and provider else "unknown"
+        response_id = getattr(result, "id", None)
+        litellm_call_id = self.model_call_details.get("litellm_call_id")
+        raw_tracking_id = response_id if isinstance(response_id, str) and response_id else litellm_call_id
+        normalized_tracking_id = (
+            raw_tracking_id if isinstance(raw_tracking_id, str) and raw_tracking_id else "unknown-request"
+        )
+        response_model = getattr(result, "model", None)
+        request_model = self.model_call_details.get("model")
+        raw_model = response_model if isinstance(response_model, str) and response_model else request_model
+        normalized_model = raw_model if isinstance(raw_model, str) and raw_model else normalized_provider
+        unresolved = UnresolvedProviderCost(
+            provider=normalized_provider,
+            tracking_id=f"{normalized_provider}-cost:{normalized_tracking_id}",
+            model=normalized_model,
+            reason=f"{normalized_provider} response omitted provider-reported cost",
+            evidence={"call_type": str(self.call_type)},
+        )
+        self.model_call_details["provider_cost_unresolved"] = unresolved.model_dump()
+        verbose_logger.error(
+            "Provider cost is unresolved for %s: %s",
+            unresolved.tracking_id,
+            unresolved.reason,
+        )
 
     def _generate_content_result_as_model_response(self, result: object) -> Optional[ModelResponse]:
         """
@@ -1699,6 +1737,43 @@ class Logging(LiteLLMLoggingBaseClass):
                     logging_obj=self,
                     endpoint=self.model_call_details.get("endpoint", ""),
                 )
+        elif self.call_type in (
+            CallTypes.video_content.value,
+            CallTypes.avideo_content.value,
+        ) and isinstance(result, bytes):
+            response_cost = self.model_call_details.get("response_cost")
+            if isinstance(response_cost, (int, float)):
+                tracking_id = self.model_call_details.get("provider_cost_tracking_id")
+                tracking_model = self.model_call_details.get("provider_cost_tracking_model")
+                logging_result = VideoObject(
+                    id=tracking_id if isinstance(tracking_id, str) else self.litellm_call_id,
+                    object="video",
+                    status="completed",
+                    model=tracking_model if isinstance(tracking_model, str) else None,
+                )
+                logging_result._hidden_params = {"response_cost": float(response_cost)}
+        elif isinstance(result, VideoObject):
+            hidden_params = getattr(result, "_hidden_params", {})
+            response_cost = hidden_params.get(
+                "response_cost",
+                self.model_call_details.get("response_cost"),
+            )
+            tracking_id = hidden_params.get(
+                "provider_cost_tracking_id",
+                self.model_call_details.get("provider_cost_tracking_id"),
+            )
+            tracking_model = hidden_params.get(
+                "provider_cost_tracking_model",
+                self.model_call_details.get("provider_cost_tracking_model"),
+            )
+            if isinstance(response_cost, (int, float)) and isinstance(tracking_id, str):
+                logging_result = result.model_copy(
+                    update={
+                        "id": tracking_id,
+                        "model": tracking_model if isinstance(tracking_model, str) else result.model,
+                    }
+                )
+                logging_result._hidden_params = {"response_cost": float(response_cost)}
         return logging_result
 
     def _merge_hidden_params_from_response_into_metadata(self, logging_result: Any) -> None:

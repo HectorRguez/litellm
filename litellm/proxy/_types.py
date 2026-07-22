@@ -56,6 +56,7 @@ from litellm.types.utils import (
     StandardLoggingVectorStoreRequest,
     StandardPassThroughResponseObject,
     TextCompletionResponse,
+    UnresolvedProviderCost as UnresolvedProviderCost,
 )
 from litellm.types.videos.main import VideoObject
 
@@ -741,6 +742,7 @@ class LiteLLMRoutes(enum.Enum):
     )
 
     self_managed_routes = [
+        "/spend/report",
         "/team/member_add",
         "/team/member_delete",
         "/team/member_update",
@@ -2966,6 +2968,29 @@ class LiteLLM_AuditLogs(LiteLLMPydanticObjectBase):
 
 class LiteLLM_SpendLogs_ResponseObject(LiteLLMPydanticObjectBase):
     response: Optional[List[Union[LiteLLM_SpendLogs, Any]]] = None
+
+
+class ExternalSpendUsage(LiteLLMPydanticObjectBase):
+    unit: Literal["billable_units"]
+    quantity: float = Field(ge=0, allow_inf_nan=False)
+
+
+class ExternalSpendReportRequest(LiteLLMPydanticObjectBase):
+    provider: Literal["fal"]
+    external_model: str = Field(min_length=1, max_length=256)
+    usage: ExternalSpendUsage
+    request_id: str = Field(min_length=1, max_length=256)
+    end_user: str | None = Field(default=None, max_length=256)
+    tags: list[str] = Field(default_factory=list, max_length=64)
+    metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+class ExternalSpendReportResponse(LiteLLMPydanticObjectBase):
+    request_id: str
+    status: Literal["resolved", "unresolved"]
+    spend: float | None
+    created: bool
+    error: str | None = None
 
 
 class TokenCountRequest(LiteLLMPydanticObjectBase):

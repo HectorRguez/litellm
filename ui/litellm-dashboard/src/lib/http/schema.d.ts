@@ -12555,6 +12555,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/spend/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report External Spend */
+        post: operations["report_external_spend_spend_report_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/spend/tags": {
         parameters: {
             query?: never;
@@ -23711,6 +23728,53 @@ export interface components {
             /** Updated At */
             updated_at?: number | null;
         };
+        /** ExternalSpendReportRequest */
+        ExternalSpendReportRequest: {
+            /** End User */
+            end_user?: string | null;
+            /** External Model */
+            external_model: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: string | number | boolean | null;
+            };
+            /**
+             * Provider
+             * @constant
+             */
+            provider: "fal";
+            /** Request Id */
+            request_id: string;
+            /** Tags */
+            tags?: string[];
+            usage: components["schemas"]["ExternalSpendUsage"];
+        };
+        /** ExternalSpendReportResponse */
+        ExternalSpendReportResponse: {
+            /** Created */
+            created: boolean;
+            /** Error */
+            error?: string | null;
+            /** Request Id */
+            request_id: string;
+            /** Spend */
+            spend: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "resolved" | "unresolved";
+        };
+        /** ExternalSpendUsage */
+        ExternalSpendUsage: {
+            /** Quantity */
+            quantity: number;
+            /**
+             * Unit
+             * @constant
+             */
+            unit: "billable_units";
+        };
         /**
          * FailedKeyUpdate
          * @description Failed key update with reason
@@ -24341,7 +24405,7 @@ export interface components {
          */
         HTTPAuthSecurityScheme: {
             /** Bearerformat */
-            bearerFormat: string | null;
+            bearerFormat?: string | null;
             /** Description */
             description?: string | null;
             /** Scheme */
@@ -28529,7 +28593,7 @@ export interface components {
             description?: string | null;
             flows: components["schemas"]["OAuthFlows"];
             /** Oauth2Metadataurl */
-            oauth2MetadataUrl: string | null;
+            oauth2MetadataUrl?: string | null;
             /**
              * Type
              * @constant
@@ -49194,6 +49258,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_external_spend_spend_report_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalSpendReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalSpendReportResponse"];
                 };
             };
             /** @description Validation Error */

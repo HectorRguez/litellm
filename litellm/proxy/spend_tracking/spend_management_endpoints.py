@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Dict,
     List,
@@ -15,6 +16,7 @@ from typing import (
 )
 
 import fastapi
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 import litellm
@@ -26,6 +28,10 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 # NOTE: Avoid module-level import from common_utils: proxy_server imports this
 # module while common_utils may pull proxy_server during init, which can leave
 # those names undefined. Import the helpers locally where they are used.
+from litellm.proxy.spend_tracking.external_spend_cost_calculator import (
+    external_spend_cost_calculator,
+)
+from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
     get_spend_by_team,
     get_spend_by_team_and_customer,
@@ -46,6 +52,127 @@ else:
 router = APIRouter()
 
 SPEND_LOGS_PAGINATION_COUNT_CAP = 10000
+
+
+@router.post(
+    "/spend/report",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=ExternalSpendReportResponse,
+)
+async def report_external_spend(
+    data: ExternalSpendReportRequest,
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
+) -> ExternalSpendReportResponse:
+    from litellm.proxy.proxy_server import (
+        litellm_proxy_budget_name,
+        prisma_client,
+        proxy_logging_obj,
+        user_api_key_cache,
+    )
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not connected",
+        )
+
+    external_request_id = f"external:{data.provider}:{data.request_id}"
+    now = datetime.now(timezone.utc)
+    try:
+        resolved_cost = await external_spend_cost_calculator.resolve(data)
+    except (ValueError, httpx.HTTPError) as exc:
+        reason = (
+            str(exc)
+            if isinstance(exc, ValueError)
+            else f"External provider pricing lookup failed: {type(exc).__name__}"
+        )
+        unresolved_cost = UnresolvedProviderCost(
+            provider=data.provider,
+            tracking_id=external_request_id,
+            model=data.external_model,
+            reason=reason,
+            evidence={
+                "usage_unit": data.usage.unit,
+                "usage_quantity": data.usage.quantity,
+            },
+            metadata=data.metadata,
+        )
+        created = await proxy_logging_obj.db_spend_update_writer.report_unresolved_provider_cost(
+            unresolved_cost=unresolved_cost,
+            start_time=now,
+            end_time=now,
+            request_tags=data.tags,
+            end_user_id=data.end_user,
+            user_id=user_api_key_dict.user_id,
+            team_id=user_api_key_dict.team_id,
+            org_id=user_api_key_dict.org_id,
+            api_base=external_spend_cost_calculator.FAL_PRICING_URL,
+            prisma_client=prisma_client,
+        )
+        if created:
+            error_msg = f"Provider cost unresolved for {external_request_id}: {reason}"
+            await proxy_logging_obj.failed_tracking_alert(
+                error_message=error_msg,
+                failing_model=data.external_model,
+            )
+            spend_log_error(error_msg)
+        return ExternalSpendReportResponse(
+            request_id=external_request_id,
+            status="unresolved",
+            spend=None,
+            created=created,
+            error=reason,
+        )
+
+    metadata = {
+        "user_api_key": user_api_key_dict.api_key,
+        "user_api_key_alias": user_api_key_dict.key_alias,
+        "user_api_key_team_id": user_api_key_dict.team_id,
+        "user_api_key_org_id": user_api_key_dict.org_id,
+        "user_api_key_user_id": user_api_key_dict.user_id,
+        "user_api_key_end_user_id": data.end_user,
+        "tags": data.tags,
+        "spend_logs_metadata": {**data.metadata, **resolved_cost.metadata},
+    }
+    kwargs = {
+        "model": data.external_model,
+        "custom_llm_provider": data.provider,
+        "call_type": "external_spend",
+        "litellm_call_id": external_request_id,
+        "response_cost": resolved_cost.spend,
+        "litellm_params": {
+            "metadata": metadata,
+            "user_api_key_end_user_id": data.end_user,
+        },
+    }
+    payload = get_logging_payload(
+        kwargs=kwargs,
+        response_obj={},
+        start_time=now,
+        end_time=now,
+    )
+    payload["request_id"] = external_request_id
+    payload["spend"] = resolved_cost.spend
+    created = await proxy_logging_obj.db_spend_update_writer.report_external_spend(
+        payload=payload,
+        response_cost=resolved_cost.spend,
+        user_id=user_api_key_dict.user_id,
+        hashed_token=user_api_key_dict.api_key,
+        team_id=user_api_key_dict.team_id,
+        org_id=user_api_key_dict.org_id,
+        end_user_id=data.end_user,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        litellm_proxy_budget_name=litellm_proxy_budget_name,
+    )
+    return ExternalSpendReportResponse(
+        request_id=external_request_id,
+        status="resolved",
+        spend=resolved_cost.spend,
+        created=created,
+    )
 
 
 @router.get(
@@ -1647,7 +1774,7 @@ async def ui_view_spend_logs(
         description="Time till which to view key spend",
     ),
     page: int = fastapi.Query(default=1, description="Page number for pagination", ge=1),
-    page_size: int = fastapi.Query(default=50, description="Number of items per page", ge=1, le=100),
+    page_size: int = fastapi.Query(default=50, description="Number of items per page", ge=1, le=1000),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     status_filter: str | None = fastapi.Query(
         default=None, description="Filter logs by status (e.g., success, failure)"

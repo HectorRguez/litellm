@@ -321,6 +321,32 @@ def test_spend_logs_payload_whisper():
     assert payload["spend"] == 0.00023398580000000003
 
 
+def test_video_content_spend_logs_use_standard_logging_id():
+    """Keep repeated downloads of one provider video idempotent in spend logs."""
+    now = datetime.datetime.now()
+    payload = get_logging_payload(
+        kwargs={
+            "model": "fal-ai/heygen/avatar5/digital-twin",
+            "custom_llm_provider": "fal_ai",
+            "call_type": "avideo_content",
+            "litellm_call_id": "transient-call-id",
+            "response_cost": 2.1,
+            "litellm_params": {"metadata": {}},
+            "standard_logging_object": {
+                "id": "fal-video-cost:request-123",
+                "metadata": {},
+                "model_map_information": {},
+            },
+        },
+        response_obj=b"video-bytes",
+        start_time=now,
+        end_time=now,
+    )
+
+    assert payload["request_id"] == "fal-video-cost:request-123"
+    assert payload["spend"] == 2.1
+
+
 def test_spend_logs_payload_with_prompts_enabled(monkeypatch):
     """
     Test that messages and responses are logged in spend logs when store_prompts_in_spend_logs is enabled

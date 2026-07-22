@@ -16,6 +16,7 @@ from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.llms.openrouter.common_utils import OpenRouterException
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import UnresolvedProviderCost
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import encode_video_id_with_provider, extract_original_video_id
 
@@ -299,12 +300,18 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
         response = self._parse_video_response(raw_response)
-        return self._to_video_object(
+        video = self._to_video_object(
             response=response,
             custom_llm_provider=custom_llm_provider,
             model=response.model,
             request_data=None,
         )
+        self._record_provider_cost(
+            response=response,
+            video=video,
+            logging_obj=logging_obj,
+        )
+        return video
 
     def get_error_class(
         self,
@@ -381,6 +388,44 @@ class OpenRouterVideoConfig(BaseVideoConfig):
             ),
             **({"duration_seconds": self._numeric_value(duration)} if duration is not None else {}),
             **({"video_resolution": str(size)} if size is not None else {}),
+        }
+
+    def _record_provider_cost(
+        self,
+        response: _OpenRouterVideoResponse,
+        video: VideoObject,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        if response.status != "completed":
+            return
+        tracking_id = f"openrouter-video-cost:{response.generation_id or response.id}"
+        tracking_model = response.model or logging_obj.model_call_details.get("model") or "openrouter"
+        logging_obj.model_call_details["provider_cost_authoritative"] = True
+        logging_obj.model_call_details["provider_cost_tracking_id"] = tracking_id
+        logging_obj.model_call_details["provider_cost_tracking_model"] = tracking_model
+        if response.usage is None or response.usage.cost is None:
+            unresolved = UnresolvedProviderCost(
+                provider="openrouter",
+                tracking_id=tracking_id,
+                model=tracking_model,
+                reason="OpenRouter completed video response omitted usage.cost",
+                evidence={"status": response.status},
+            )
+            logging_obj.model_call_details["provider_cost_unresolved"] = unresolved.model_dump()
+            video._hidden_params = {
+                "provider_cost_authoritative": True,
+                "provider_cost_tracking_id": tracking_id,
+                "provider_cost_tracking_model": tracking_model,
+                "provider_cost_unresolved": unresolved.model_dump(),
+            }
+            return
+        logging_obj.model_call_details["response_cost"] = response.usage.cost
+        logging_obj.model_call_details.pop("provider_cost_unresolved", None)
+        video._hidden_params = {
+            "response_cost": response.usage.cost,
+            "provider_cost_authoritative": True,
+            "provider_cost_tracking_id": tracking_id,
+            "provider_cost_tracking_model": tracking_model,
         }
 
     def _video_error(self, error: Union[str, _OpenRouterVideoError] | None) -> dict[str, object] | None:
