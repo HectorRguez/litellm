@@ -14,7 +14,7 @@ docker/Dockerfile.*
 .claude-flow/
 .swarm/
 .hive-mind/
-memory/
+memory/**
 coordination/
 claude-flow
 .mcp.json
