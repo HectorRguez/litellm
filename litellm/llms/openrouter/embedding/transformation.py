@@ -10,6 +10,7 @@ Docs: https://openrouter.ai/docs
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
+from pydantic import BaseModel, ConfigDict
 
 from litellm.llms.base_llm.embedding.transformation import BaseEmbeddingConfig
 from litellm.types.llms.openai import AllEmbeddingInputValues
@@ -24,6 +25,27 @@ if TYPE_CHECKING:
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
     LiteLLMLoggingObj = Any
+
+
+class _OpenRouterEmbeddingCostDetails(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    upstream_inference_cost: float
+    upstream_inference_prompt_cost: float
+    upstream_inference_completions_cost: float
+
+
+class _OpenRouterEmbeddingUsage(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    cost: float
+    cost_details: _OpenRouterEmbeddingCostDetails | None = None
+
+
+class _OpenRouterEmbeddingResponse(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    usage: _OpenRouterEmbeddingUsage
 
 
 class OpenrouterEmbeddingConfig(BaseEmbeddingConfig):
@@ -137,12 +159,25 @@ class OpenrouterEmbeddingConfig(BaseEmbeddingConfig):
 
         # OpenRouter returns standard OpenAI-compatible embedding response
         response_json = raw_response.json()
-
-        return convert_to_model_response_object(
+        provider_response = _OpenRouterEmbeddingResponse.model_validate(response_json)
+        transformed_response = convert_to_model_response_object(
             response_object=response_json,
             model_response_object=model_response,
             response_type="embedding",
         )
+        transformed_response._hidden_params = {
+            **transformed_response._hidden_params,
+            "additional_headers": {
+                **transformed_response._hidden_params.get("additional_headers", {}),
+                "llm_provider-x-litellm-response-cost": provider_response.usage.cost,
+            },
+            **(
+                {"response_cost_details": provider_response.usage.cost_details.model_dump()}
+                if provider_response.usage.cost_details is not None
+                else {}
+            ),
+        }
+        return transformed_response
 
     def get_supported_openai_params(self, model: str) -> list:
         """
